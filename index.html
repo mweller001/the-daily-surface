@@ -377,13 +377,10 @@ function App() {
   return h("div",{style:{minHeight:"100vh"}},
     h("header",{style:{maxWidth:1180,margin:"0 auto",padding:"max(28px, env(safe-area-inset-top)) 24px 10px"}},
       h("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:8}},
-        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:26,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.1.6"),
+        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:26,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.1.7"),
         h("div",{style:{fontSize:12.5,color:C.sub,fontStyle:"italic"}}, "the urgent that is always done, and the important that is finally heard")
       ),
       h("div",{id:"status-bar",style:{color:(status.indexOf("Could not")===0||status.indexOf("failed")>-1)?"#a23":C.faint}}, status),
-      h("div",{style:{fontSize:11,color:"#a23",fontFamily:"monospace",padding:"2px 0",whiteSpace:"pre-wrap"}},
-        "DIAG: loaded="+tasks.length+" active="+sorted.active.length+" placed="+schedule.placed.length+" railAhead="+schedule.railItems.filter(function(it){return it.endMin>nowMin;}).length+" now="+nowMin+" ("+fmtMin(nowMin)+") fit="+fitLevel+"\n"+
-        schedule.placed.map(function(p){return p.title+": start="+p.startMin+" end="+(p.startMin+p.dur)+" pri="+p.priority+" eff="+p.effort+" q="+(p.queued?"Y":"n")+" loose="+(p.loose?"Y":"n");}).join("\n")),
       h("div",{style:{height:1,background:C.panelEdge}})
     ),
     h("div",{className:"il-tabs",style:{maxWidth:1180,margin:"0 auto",padding:"10px 24px 0",gap:6}}, tabBtns),
