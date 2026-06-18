@@ -152,15 +152,16 @@ function App() {
   }, [sorted.background]);
 
   var schedule = useMemo(function(){
-    var dayStart=7*60, dayEnd=22*60;
+    var horizon = nowMin + 48*60; // rolling multi-day horizon: now forward, no fixed day boundary
     function toMin(s){ var p=s.split(":"); return (+p[0])*60 + (+p[1]); }
     var blocks = appts.map(function(a){ return Object.assign({}, a, { s:toMin(a.start), e:toMin(a.end) }); }).sort(function(x,y){return x.s-y.s;});
-    var gaps=[], cursor=dayStart, i;
-    for (i=0;i<blocks.length;i++){ if(blocks[i].s>cursor) gaps.push({s:cursor,e:blocks[i].s}); cursor=Math.max(cursor,blocks[i].e); }
-    if (cursor<dayEnd) gaps.push({s:cursor,e:dayEnd});
+    // gaps run from now forward to the horizon, carved by any appointments ahead
+    var gaps=[], cursor=nowMin, i;
+    for (i=0;i<blocks.length;i++){ if(blocks[i].e<=nowMin) continue; if(blocks[i].s>cursor) gaps.push({s:cursor,e:blocks[i].s}); cursor=Math.max(cursor,blocks[i].e); }
+    if (cursor<horizon) gaps.push({s:cursor,e:horizon});
     var gapsLeft = gaps.map(function(g){ return {s:g.s,e:g.e,used:0}; });
     var placed=[];
-    var queueCursor = Math.max(nowMin, blocks.length ? blocks[blocks.length-1].e : dayStart);
+    var queueCursor = Math.max(nowMin, blocks.length ? blocks[blocks.length-1].e : nowMin);
     sorted.active.forEach(function(t){
       var dur = SPOON_MIN[t.effort] || 30;
       var mayFit = t.priority >= fitLevel;
@@ -376,7 +377,7 @@ function App() {
   return h("div",{style:{minHeight:"100vh"}},
     h("header",{style:{maxWidth:1180,margin:"0 auto",padding:"max(28px, env(safe-area-inset-top)) 24px 10px"}},
       h("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:8}},
-        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:26,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.1.5"),
+        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:26,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.1.6"),
         h("div",{style:{fontSize:12.5,color:C.sub,fontStyle:"italic"}}, "the urgent that is always done, and the important that is finally heard")
       ),
       h("div",{id:"status-bar",style:{color:(status.indexOf("Could not")===0||status.indexOf("failed")>-1)?"#a23":C.faint}}, status),
