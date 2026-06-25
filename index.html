@@ -294,21 +294,40 @@ function App() {
 
   var closePopup = useCallback(function(){ setPopup(null); setEditId(null); }, []);
 
-  // Long-press (touch) + right-click (desktop) → open the contextual popup at the touch point.
-  var pressTimer = React.useRef ? React.useRef(null) : { current:null };
+  // Pointer-events long-press (no 300ms synthetic-click ghost) + right-click on desktop.
+  var pressTimer = React.useRef(null);
+  var pressOrigin = React.useRef(null);  // {x,y,pointerId} of the in-flight press
+  var openGuardUntil = React.useRef(0);  // backdrop ignores closes until this timestamp
+  var MOVE_SLOP = 10;                     // px of finger drift tolerated before it's a scroll
+
+  function clearPress(){
+    if(pressTimer.current){ clearTimeout(pressTimer.current); pressTimer.current=null; }
+    pressOrigin.current = null;
+  }
   function pressHandlers(task){
     function openAt(clientX, clientY){
+      openGuardUntil.current = Date.now() + 120; // swallow the tail of this same gesture
       setPopup({ id:task.id, x:clientX, y:clientY });
       setEditId(null);
     }
     return {
-      onTouchStart:function(e){
-        var tch = e.touches && e.touches[0]; if(!tch) return;
-        var x=tch.clientX, y=tch.clientY;
-        pressTimer.current = setTimeout(function(){ openAt(x,y); }, 480);
+      onPointerDown:function(e){
+        // primary button / touch / pen only; ignore right-button (that's contextmenu's job)
+        if(e.button && e.button!==0) return;
+        var x=e.clientX, y=e.clientY, pid=e.pointerId;
+        pressOrigin.current = { x:x, y:y, pointerId:pid };
+        clearTimeout(pressTimer.current);
+        pressTimer.current = setTimeout(function(){
+          pressTimer.current = null;
+          openAt(x, y);
+        }, 480);
       },
-      onTouchEnd:function(){ if(pressTimer.current){ clearTimeout(pressTimer.current); pressTimer.current=null; } },
-      onTouchMove:function(){ if(pressTimer.current){ clearTimeout(pressTimer.current); pressTimer.current=null; } },
+      onPointerMove:function(e){
+        var o = pressOrigin.current; if(!o) return;
+        if(Math.abs(e.clientX-o.x) > MOVE_SLOP || Math.abs(e.clientY-o.y) > MOVE_SLOP){ clearPress(); }
+      },
+      onPointerUp:clearPress,
+      onPointerCancel:clearPress,
       onContextMenu:function(e){ e.preventDefault(); openAt(e.clientX, e.clientY); }
     };
   }
@@ -374,7 +393,7 @@ function App() {
               style:{width:"100%",boxSizing:"border-box",border:"1px solid "+sw.color,borderRadius:3,padding:"4px 7px",fontSize:14,color:C.ink,fontFamily:"inherit",fontWeight:500} })
           : h("div",{style:{fontSize:14,color:C.ink,fontWeight:500,lineHeight:1.3,cursor:"default"}}, it.title);
         railChildren.push(
-          h("div",Object.assign({key:it.id||("t"+i),style:{border:"1px solid "+C.panelEdge,borderLeft:"5px solid "+sw.color,background:C.panel,borderRadius:3,padding:"10px 12px",marginBottom:8,display:"flex",gap:10,alignItems:"flex-start",WebkitUserSelect:"none",userSelect:"none"}},ph),
+          h("div",Object.assign({key:it.id||("t"+i),style:{border:"1px solid "+C.panelEdge,borderLeft:"5px solid "+sw.color,background:C.panel,borderRadius:3,padding:"10px 12px",marginBottom:8,display:"flex",gap:10,alignItems:"flex-start",WebkitUserSelect:"none",userSelect:"none",touchAction:"pan-y"}},ph),
             h("button",{onClick:function(){toggleDone(it.id);},"aria-label":"mark done",style:{marginTop:2,width:16,height:16,flexShrink:0,border:"1.5px solid "+C.faint,borderRadius:3,background:"transparent",cursor:"pointer"}}),
             h("div",{style:{flex:1,minWidth:0}},
               titleNode,
@@ -513,9 +532,13 @@ function App() {
         swatchRow(task.priority, function(v){ setPriorityFor(task.id, v); }, 24)
       )
     ];
-    return h("div",{key:"backdrop",onClick:closePopup,onContextMenu:function(e){e.preventDefault();closePopup();},
+    function backdropClose(e){
+      if(Date.now() < openGuardUntil.current) return; // ignore the opening gesture's own tail
+      closePopup();
+    }
+    return h("div",{key:"backdrop",onPointerDown:backdropClose,onContextMenu:function(e){e.preventDefault();backdropClose(e);},
         style:{position:"fixed",inset:0,zIndex:50,background:"rgba(28,31,38,0.04)"}},
-      h("div",{onClick:function(e){e.stopPropagation();},
+      h("div",{onPointerDown:function(e){e.stopPropagation();},
         style:{position:"fixed",left:x,top:y,zIndex:51,background:C.panel,border:"1px solid "+C.panelEdge,
           borderRadius:8,padding:"10px 12px",boxShadow:"0 8px 28px rgba(28,31,38,0.18)"}},
         menuChildren)
@@ -531,7 +554,7 @@ function App() {
     popupNode(),
     h("header",{style:{maxWidth:1180,margin:"0 auto",padding:"max(28px, env(safe-area-inset-top)) 24px 10px"}},
       h("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:8}},
-        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:26,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.2.1"),
+        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:26,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.2.2"),
         h("div",{style:{fontSize:12.5,color:C.sub,fontStyle:"italic"}}, "the urgent that is always done, and the important that is finally heard")
       ),
       h("div",{id:"status-bar",style:{color:(status.indexOf("Could not")===0||status.indexOf("failed")>-1)?"#a23":C.faint}}, status),
