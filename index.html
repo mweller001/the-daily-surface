@@ -114,14 +114,6 @@ var SORTS = {
   light:     { label:"Quick first",    sub:"lightest, then priority", fn:function(a,b){ return a.effort-b.effort || b.priority-a.priority; } },
   prioLight: { label:"Priority · light", sub:"priority, then lightest", fn:function(a,b){ return b.priority-a.priority || a.effort-b.effort; } }
 };
-// Option A: fit tiers cut on swatch boundaries, so fit-language matches priority-language.
-var FIT_LEVELS = [
-  { v:12, label:"Strict",    sub:"sort only, no fitting" },
-  { v:9,  label:"Red only",  sub:"fit red" },
-  { v:7,  label:"Orange+",   sub:"fit orange & up" },
-  { v:5,  label:"Yellow+",   sub:"fit yellow & up" },
-  { v:0,  label:"Fit all",   sub:"fit anything that fits" }
-];
 function fmtMin(mm){ return String(Math.floor(mm/60)%24).padStart(2,"0")+":"+String(mm%60).padStart(2,"0"); }
 function minToLabel(min){ if(min<60) return min+"m"; var hh=Math.floor(min/60), m=min%60; return m? hh+"h"+m : hh+"h"; }
 function priorityTone(p){ return prioritySwatch(p).color; }
@@ -154,8 +146,6 @@ function App() {
   var s_status = useState(""), status = s_status[0], setStatus = s_status[1];
   var s_tab = useState("foreground"), tab = s_tab[0], setTab = s_tab[1];
   var s_sort = useState("default"), sortKey = s_sort[0], setSortKey = s_sort[1];
-  var s_fit = useState(7), fitLevel = s_fit[0], setFitLevel = s_fit[1];
-  var sizeThreshold = 15;
   var s_tasks = useState([]), tasks = s_tasks[0], setTasks = s_tasks[1];
   var s_appts = useState([]), appts = s_appts[0], setAppts = s_appts[1];
   var s_hist = useState(false), historyOpen = s_hist[0], setHistoryOpen = s_hist[1];
@@ -195,37 +185,65 @@ function App() {
     return bgs[0] || null;
   }, [sorted.background]);
 
+  // COMPOSE: tasks (sorted, no times) + events (fixed times) → rail.
+  // Re-runs on sort change / add / delete / edit (via sorted.active) and on appts / nowMin.
+  // Forward-only cursor, strict sort order, roll-forward, NO backfill. Gaps are acceptable.
+  // A task's shown time is the real slot it landed in — never an invented stamp.
   var schedule = useMemo(function(){
-    var horizon = nowMin + 48*60; // rolling multi-day horizon: now forward, no fixed day boundary
+    var horizon = nowMin + 48*60; // 48h ahead; revisit when calendar events bring real dates
     function toMin(s){ var p=s.split(":"); return (+p[0])*60 + (+p[1]); }
-    var blocks = appts.map(function(a){ return Object.assign({}, a, { s:toMin(a.start), e:toMin(a.end) }); }).sort(function(x,y){return x.s-y.s;});
-    // gaps run from now forward to the horizon, carved by any appointments ahead
-    var gaps=[], cursor=nowMin, i;
-    for (i=0;i<blocks.length;i++){ if(blocks[i].e<=nowMin) continue; if(blocks[i].s>cursor) gaps.push({s:cursor,e:blocks[i].s}); cursor=Math.max(cursor,blocks[i].e); }
-    if (cursor<horizon) gaps.push({s:cursor,e:horizon});
-    var gapsLeft = gaps.map(function(g){ return {s:g.s,e:g.e,used:0}; });
-    var placed=[];
-    var queueCursor = Math.max(nowMin, blocks.length ? blocks[blocks.length-1].e : nowMin);
+    // events: fixed blocks, sorted by start, only those not already past
+    var blocks = appts.map(function(a){ return Object.assign({}, a, { s:toMin(a.start), e:toMin(a.end) }); })
+      .filter(function(b){ return b.e > nowMin; })
+      .sort(function(x,y){ return x.s-y.s; });
+    // slots: the open time between now→first event, event→event, last event→horizon
+    var slots=[], cursor=nowMin, i;
+    for (i=0;i<blocks.length;i++){
+      if (blocks[i].s > cursor){ slots.push({ s:cursor, e:blocks[i].s, after:i }); } // gap before block i
+      cursor = Math.max(cursor, blocks[i].e);
+    }
+    if (cursor < horizon){ slots.push({ s:cursor, e:horizon, after:blocks.length }); } // tail slot
+    // walk sorted tasks with a forward-only cursor; place each in the earliest slot AT OR AFTER
+    // the cursor that holds its duration. Skipped slots are left empty (no backfill).
+    var slotState = slots.map(function(g){ return { s:g.s, e:g.e, after:g.after, used:0, tasks:[] }; });
+    var sIdx = 0;            // forward-only slot cursor
+    var unfitted = [];       // tasks that fit no remaining slot → render below last event
+    var overflowing = false; // once true, every later task joins unfitted (strict order)
     sorted.active.forEach(function(t){
-      var dur = SPOON_MIN[t.effort] || 30;
-      var mayFit = t.priority >= fitLevel;
-      var put = null, gi;
-      if (mayFit){
-        for (gi=0; gi<gapsLeft.length; gi++){
-          var g = gapsLeft[gi];
-          var start = Math.max(g.s + g.used, nowMin);
-          if (start + dur <= g.e && g.e > nowMin){ g.used = (start - g.s) + dur; put = {start:start, end:start+dur}; break; }
+      var dur = SPOON_MIN[t.effort] || 30; // effort 3 ("60+") counts as 60 for fit math
+      if (overflowing){ unfitted.push(Object.assign({}, t, { dur:dur })); return; }
+      var placedHere = false;
+      while (sIdx < slotState.length){
+        var g = slotState[sIdx];
+        var start = g.s + g.used;
+        if (start + dur <= g.e){
+          g.tasks.push(Object.assign({}, t, { dur:dur, startMin:start, endMin:start+dur,
+            schStart:fmtMin(start), schEnd:fmtMin(start+dur) }));
+          g.used += dur;
+          placedHere = true;
+          break;
+        } else {
+          sIdx++; // this slot can't hold it — roll forward, leave remaining space empty
         }
-        if (!put && dur <= sizeThreshold){ put = {start:nowMin, end:nowMin+dur, loose:true}; }
       }
-      if (!put){ put = {start:queueCursor, end:queueCursor+dur, queued:true}; queueCursor += dur; }
-      placed.push(Object.assign({}, t, { dur:dur, schStart:fmtMin(put.start), schEnd:fmtMin(put.end), startMin:put.start, endMin:put.end, loose:put.loose, queued:put.queued }));
+      if (!placedHere){ overflowing = true; unfitted.push(Object.assign({}, t, { dur:dur })); }
     });
-    var railItems = blocks.map(function(b){ return Object.assign({type:"appt", startMin:b.s, endMin:b.e}, b); })
-      .concat(placed.map(function(p){ return Object.assign({type:"task"}, p); }))
-      .sort(function(x,y){ return x.startMin-y.startMin; });
-    return { blocks:blocks, placed:placed, railItems:railItems };
-  }, [appts, sorted.active, fitLevel, nowMin]);
+    // build the rail in true visual order: interleave events and their preceding slot's tasks,
+    // then the tail slot's tasks, then unfitted below everything.
+    var railItems = [];
+    function pushSlotTasks(afterIndex){
+      slotState.forEach(function(g){
+        if (g.after === afterIndex){ g.tasks.forEach(function(p){ railItems.push(Object.assign({ type:"task" }, p)); }); }
+      });
+    }
+    for (i=0;i<blocks.length;i++){
+      pushSlotTasks(i);                 // tasks in the slot before event i
+      railItems.push(Object.assign({ type:"appt", startMin:blocks[i].s, endMin:blocks[i].e }, blocks[i]));
+    }
+    pushSlotTasks(blocks.length);       // tasks in the tail slot (after last event)
+    unfitted.forEach(function(p){ railItems.push(Object.assign({ type:"task", unfitted:true }, p)); });
+    return { blocks:blocks, railItems:railItems, unfittedCount:unfitted.length };
+  }, [appts, sorted.active, nowMin]);
 
   var totalForeground = useMemo(function(){
     return sorted.active.reduce(function(s,t){ return s+(SPOON_MIN[t.effort]||30); }, 0);
@@ -364,7 +382,8 @@ function App() {
   }
 
   function foreground(){
-    var items = schedule.railItems.filter(function(it){ return it.endMin > nowMin; });
+    // keep unfitted tasks (no real time) always; drop fitted items / events only once elapsed
+    var items = schedule.railItems.filter(function(it){ return it.unfitted || it.endMin > nowMin; });
     var railChildren = [
       h("div",{key:"nowbar",style:{display:"flex",alignItems:"center",gap:8,marginBottom:12}},
         h("span",{style:{fontSize:10.5,fontWeight:700,letterSpacing:1,color:C.nowline,fontVariantNumeric:"tabular-nums"}}, "NOW · "+fmtMin(nowMin)),
@@ -374,7 +393,17 @@ function App() {
     if (items.length===0){
       railChildren.push(h("div",{key:"empty",style:{fontSize:13,color:C.faint,fontStyle:"italic",padding:"8px 0"}}, "Nothing scheduled ahead. Capture something below."));
     }
+    var unfittedShown = false;
     items.forEach(function(it,i){
+      if (it.type==="task" && it.unfitted && !unfittedShown){
+        unfittedShown = true;
+        railChildren.push(
+          h("div",{key:"unfit-div",style:{display:"flex",alignItems:"center",gap:8,margin:"14px 0 10px"}},
+            h("span",{style:{fontSize:10,letterSpacing:1,textTransform:"uppercase",color:C.cold,fontWeight:700}}, "Doesn't fit before the horizon"),
+            h("span",{style:{flex:1,height:1,background:C.panelEdge}})
+          )
+        );
+      }
       if (it.type==="appt"){
         var active = (nowMin>=it.startMin && nowMin<it.endMin);
         railChildren.push(
@@ -398,7 +427,8 @@ function App() {
             h("div",{style:{flex:1,minWidth:0}},
               titleNode,
               h("div",{style:{display:"flex",gap:10,marginTop:4,flexWrap:"wrap",alignItems:"center"}},
-                h("span",{style:{fontSize:11,color:it.loose?C.amber:C.faint,fontVariantNumeric:"tabular-nums"}}, it.schStart+"–"+it.schEnd+(it.loose?" · slipped in":(it.queued?" · queued":""))),
+                h("span",{style:{fontSize:11,color:it.unfitted?C.cold:C.faint,fontVariantNumeric:"tabular-nums"}},
+                  it.unfitted ? "doesn't fit ahead" : (it.schStart+"–"+it.schEnd)),
                 h("span",{style:{fontSize:11,color:C.sub}}, "· "+it.project),
                 spoonDots(it.effort, sw.color)
               ),
@@ -430,17 +460,10 @@ function App() {
         h("div",{style:{fontSize:10.5,color:C.faint}}, sdef.sub)
       );
     });
-    sortBtns.push(h("div",{key:"count",style:{marginLeft:"auto",alignSelf:"center",fontSize:11.5,color:C.faint}}, sorted.active.length+" open · "+minToLabel(totalForeground)+" of focus"));
+    var countText = sorted.active.length+" open · "+minToLabel(totalForeground)+" of focus";
+    if (schedule.unfittedCount>0){ countText += " · "+schedule.unfittedCount+" past horizon"; }
+    sortBtns.push(h("div",{key:"count",style:{marginLeft:"auto",alignSelf:"center",fontSize:11.5,color:C.faint}}, countText));
     children.push(h("div",{key:"sorts",style:{display:"flex",flexWrap:"wrap",gap:6,margin:"16px 0 0"}}, sortBtns));
-
-    var fitBtns = [ h("span",{key:"lbl",style:{fontSize:10.5,letterSpacing:1,textTransform:"uppercase",color:C.faint,marginRight:2}},"Fit") ];
-    FIT_LEVELS.forEach(function(f){
-      var on = f.v===fitLevel;
-      fitBtns.push(h("button",{key:f.v,onClick:function(){setFitLevel(f.v);},title:f.sub,style:{border:"1px solid "+(on?C.cold:C.panelEdge),background:on?"rgba(91,111,140,0.1)":"transparent",color:on?C.ink:C.sub,borderRadius:2,padding:"5px 9px",cursor:"pointer",fontSize:12,fontWeight:on?600:400}}, f.label));
-    });
-    var cur = FIT_LEVELS.filter(function(f){return f.v===fitLevel;})[0];
-    fitBtns.push(h("span",{key:"sub",style:{fontSize:10.5,color:C.faint,marginLeft:4}}, cur?cur.sub:""));
-    children.push(h("div",{key:"fit",style:{display:"flex",flexWrap:"wrap",gap:6,marginTop:8,alignItems:"center"}}, fitBtns));
 
     var effDots=[]; for(var n=1;n<=MAX_SPOON;n++){ (function(n){ effDots.push(h("button",{key:n,onClick:function(){setNewEffort(n);},"aria-label":"effort "+n,style:{width:16,height:16,borderRadius:8,cursor:"pointer",border:"none",background:n<=newEffort?C.amber:C.line}})); })(n); }
     var effHint = newEffort>=MAX_SPOON ? "≈60+ · decompose?" : "≈"+minToLabel(SPOON_MIN[newEffort]);
@@ -555,7 +578,7 @@ function App() {
     popupNode(),
     h("header",{style:{maxWidth:1180,margin:"0 auto",padding:"max(28px, env(safe-area-inset-top)) 24px 10px"}},
       h("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:8}},
-        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:26,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.2.3"),
+        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:26,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.2.4"),
         h("div",{style:{fontSize:12.5,color:C.sub,fontStyle:"italic"}}, "the urgent that is always done, and the important that is finally heard")
       ),
       h("div",{id:"status-bar",style:{color:(status.indexOf("Could not")===0||status.indexOf("failed")>-1)?"#a23":C.faint}}, status),
