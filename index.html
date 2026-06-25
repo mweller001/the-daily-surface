@@ -67,7 +67,7 @@ function readTask(row) {
     title: d.title || "(untitled)",
     project: d.project || "—",
     priority: typeof d.priority === "number" ? d.priority : 5,
-    effort: typeof d.effort === "number" ? d.effort : 2,
+    effort: clampEffort(typeof d.effort === "number" ? d.effort : 2),
     note: d.note || "",
     done: !!d.done,
     background: !!d.background,
@@ -91,21 +91,40 @@ var C = {
   fixed:"#3a4250", amber:"#c8741a", amberSoft:"#f0e2cf",
   cold:"#5b6f8c", line:"#eae6dd", good:"#5d7052", nowline:"#c8741a"
 };
-var SPOON_MIN = { 1:15, 2:30, 3:60, 4:120, 5:180 };
+// effort: 1-3 spoons. 3 = "60+" and a stop-and-decompose signal (the old 4/5 top is gone).
+var SPOON_MIN = { 1:15, 2:30, 3:60 };
+var MAX_SPOON = 3;
+function clampEffort(n){ n = (typeof n==="number") ? n : 2; if(n<1) return 1; if(n>MAX_SPOON) return MAX_SPOON; return Math.round(n); }
+// priority as color swatches. stored values spaced for forward-compat; highest=red.
+// reserved (not yet surfaced): white=0, dark-blue=2, evens 4/6/8.
+var PRIORITY = [
+  { v:9, key:"red",    color:"#e02a1f", label:"Red" },
+  { v:7, key:"orange", color:"#f57b13", label:"Orange" },
+  { v:5, key:"yellow", color:"#f4c20d", label:"Yellow" },
+  { v:3, key:"beige",  color:"#cdab7e", label:"Beige" },
+  { v:1, key:"blue",   color:"#5aa9e6", label:"Light blue" }
+];
+function prioritySwatch(p){
+  var best = PRIORITY[PRIORITY.length-1];
+  for (var i=0;i<PRIORITY.length;i++){ if(p>=PRIORITY[i].v){ best=PRIORITY[i]; break; } }
+  return best;
+}
 var SORTS = {
   default:   { label:"Default",        sub:"priority, then heaviest", fn:function(a,b){ return b.priority-a.priority || b.effort-a.effort; } },
   light:     { label:"Quick first",    sub:"lightest, then priority", fn:function(a,b){ return a.effort-b.effort || b.priority-a.priority; } },
   prioLight: { label:"Priority · light", sub:"priority, then lightest", fn:function(a,b){ return b.priority-a.priority || a.effort-b.effort; } }
 };
+// Option A: fit tiers cut on swatch boundaries, so fit-language matches priority-language.
 var FIT_LEVELS = [
-  { v:11, label:"Strict",   sub:"sort only, no fitting" },
-  { v:8,  label:"High only", sub:"fit ≥8 priority" },
-  { v:5,  label:"Medium+",  sub:"fit ≥5 priority" },
-  { v:0,  label:"Fit all",  sub:"fit anything that fits" }
+  { v:12, label:"Strict",    sub:"sort only, no fitting" },
+  { v:9,  label:"Red only",  sub:"fit red" },
+  { v:7,  label:"Orange+",   sub:"fit orange & up" },
+  { v:5,  label:"Yellow+",   sub:"fit yellow & up" },
+  { v:0,  label:"Fit all",   sub:"fit anything that fits" }
 ];
 function fmtMin(mm){ return String(Math.floor(mm/60)%24).padStart(2,"0")+":"+String(mm%60).padStart(2,"0"); }
 function minToLabel(min){ if(min<60) return min+"m"; var hh=Math.floor(min/60), m=min%60; return m? hh+"h"+m : hh+"h"; }
-function priorityTone(p){ if(p>=8) return C.amber; if(p>=5) return "#a8843e"; return C.cold; }
+function priorityTone(p){ return prioritySwatch(p).color; }
 function nowMinutes(){ var d=new Date(); return d.getHours()*60 + d.getMinutes(); }
 
 function App() {
@@ -113,7 +132,7 @@ function App() {
   var s_status = useState(""), status = s_status[0], setStatus = s_status[1];
   var s_tab = useState("foreground"), tab = s_tab[0], setTab = s_tab[1];
   var s_sort = useState("default"), sortKey = s_sort[0], setSortKey = s_sort[1];
-  var s_fit = useState(8), fitLevel = s_fit[0], setFitLevel = s_fit[1];
+  var s_fit = useState(7), fitLevel = s_fit[0], setFitLevel = s_fit[1];
   var sizeThreshold = 15;
   var s_tasks = useState([]), tasks = s_tasks[0], setTasks = s_tasks[1];
   var s_appts = useState([]), appts = s_appts[0], setAppts = s_appts[1];
@@ -122,6 +141,10 @@ function App() {
   var s_eff = useState(2), newEffort = s_eff[0], setNewEffort = s_eff[1];
   var s_pri = useState(5), newPriority = s_pri[0], setNewPriority = s_pri[1];
   var s_now = useState(nowMinutes()), nowMin = s_now[0], setNowMin = s_now[1];
+  // v0.2 contextual popup: which task, where on screen, and an in-popup edit draft.
+  var s_pop = useState(null), popup = s_pop[0], setPopup = s_pop[1]; // {id,x,y} or null
+  var s_edit = useState(null), editId = s_edit[0], setEditId = s_edit[1]; // task id being text-edited, or null
+  var s_draft = useState(""), draft = s_draft[0], setDraft = s_draft[1];
 
   useEffect(function(){
     var t = setInterval(function(){ setNowMin(nowMinutes()); }, 60000);
@@ -196,7 +219,7 @@ function App() {
 
   var addTask = useCallback(function(){
     var title = newTitle.trim(); if(!title) return;
-    var dataObj = { title:title, project:"—", priority:newPriority, effort:newEffort, done:false };
+    var dataObj = { title:title, project:"—", priority:newPriority, effort:clampEffort(newEffort), done:false };
     setStatus("Saving…");
     Store.add("task", dataObj).then(function(row){
       setTasks(function(prev){ return prev.concat([readTask(row)]); });
@@ -204,12 +227,60 @@ function App() {
     }).catch(function(e){ setStatus("Save failed: " + (e.message||e)); });
   }, [newTitle, newEffort, newPriority]);
 
+  // Merge-and-persist: take the current task, apply a patch, write the full data object back.
+  // Centralizes writes so no path (done/title/priority) silently drops another's fields.
+  var persist = useCallback(function(id, patch){
+    setTasks(function(prev){
+      var next = prev.map(function(x){ return x.id===id ? Object.assign({}, x, patch) : x; });
+      var t = next.filter(function(x){return x.id===id;})[0];
+      if (t){
+        var dataObj = { title:t.title, project:t.project, priority:t.priority, effort:clampEffort(t.effort), note:t.note, background:t.background, done:t.done };
+        Store.update(id, dataObj).catch(function(e){ setStatus("Update failed: " + (e.message||e)); });
+      }
+      return next;
+    });
+  }, []);
+
   var toggleDone = useCallback(function(id){
+    setPopup(null); setEditId(null);
     var t = tasks.filter(function(x){return x.id===id;})[0]; if(!t) return;
-    var next = { title:t.title, project:t.project, priority:t.priority, effort:t.effort, note:t.note, background:t.background, done: !t.done };
-    setTasks(function(prev){ return prev.map(function(x){ return x.id===id ? Object.assign({},x,{done:!x.done}) : x; }); });
-    Store.update(id, next).catch(function(e){ setStatus("Update failed: " + (e.message||e)); });
-  }, [tasks]);
+    persist(id, { done: !t.done });
+  }, [tasks, persist]);
+
+  var saveTitle = useCallback(function(id){
+    var t = draft.trim();
+    if (t){ persist(id, { title:t }); }
+    setEditId(null);
+  }, [draft, persist]);
+
+  var setPriorityFor = useCallback(function(id, v){
+    persist(id, { priority:v });
+  }, [persist]);
+
+  var openEdit = useCallback(function(id, curTitle){
+    setEditId(id); setDraft(curTitle);
+  }, []);
+
+  var closePopup = useCallback(function(){ setPopup(null); setEditId(null); }, []);
+
+  // Long-press (touch) + right-click (desktop) → open the contextual popup at the touch point.
+  var pressTimer = React.useRef ? React.useRef(null) : { current:null };
+  function pressHandlers(task){
+    function openAt(clientX, clientY){
+      setPopup({ id:task.id, x:clientX, y:clientY });
+      setEditId(null);
+    }
+    return {
+      onTouchStart:function(e){
+        var tch = e.touches && e.touches[0]; if(!tch) return;
+        var x=tch.clientX, y=tch.clientY;
+        pressTimer.current = setTimeout(function(){ openAt(x,y); }, 480);
+      },
+      onTouchEnd:function(){ if(pressTimer.current){ clearTimeout(pressTimer.current); pressTimer.current=null; } },
+      onTouchMove:function(){ if(pressTimer.current){ clearTimeout(pressTimer.current); pressTimer.current=null; } },
+      onContextMenu:function(e){ e.preventDefault(); openAt(e.clientX, e.clientY); }
+    };
+  }
 
   if (loading) {
     return h("div", { style:{maxWidth:1180, margin:"0 auto", padding:"40px 24px", color:C.sub} }, "Loading your day…");
@@ -223,8 +294,23 @@ function App() {
   }
 
   function spoonDots(effort, tone){
-    var dots=[]; for(var k=0;k<5;k++){ dots.push(h("span",{key:k,style:{width:5,height:5,borderRadius:5,background:k<effort?tone:C.line}})); }
+    var dots=[]; for(var k=0;k<MAX_SPOON;k++){ dots.push(h("span",{key:k,style:{width:5,height:5,borderRadius:5,background:k<effort?tone:C.line}})); }
     return h("span",{style:{display:"inline-flex",gap:3}}, dots);
+  }
+
+  // A row of priority swatches. selectedV = currently chosen stored value; onPick(v) commits.
+  function swatchRow(selectedV, onPick, size){
+    size = size || 22;
+    return h("span",{style:{display:"inline-flex",gap:6}},
+      PRIORITY.map(function(p){
+        var on = p.v===selectedV;
+        return h("button",{key:p.key,onClick:function(e){ e.stopPropagation(); onPick(p.v); },title:p.label,"aria-label":"priority "+p.label,
+          style:{width:size,height:size,borderRadius:4,cursor:"pointer",background:p.color,
+            border:on?"2px solid "+C.ink:"2px solid transparent",
+            boxShadow:on?"0 0 0 1px #fff inset":"none",
+            transform:on?"scale(1.08)":"none",transition:"transform .08s"}});
+      })
+    );
   }
 
   function foreground(){
@@ -248,15 +334,23 @@ function App() {
           )
         );
       } else {
+        var sw = prioritySwatch(it.priority);
+        var ph = pressHandlers(it);
+        var titleNode = (editId===it.id)
+          ? h("input",{autoFocus:true,value:draft,onChange:function(e){setDraft(e.target.value);},
+              onKeyDown:function(e){ if(e.key==="Enter"){ saveTitle(it.id); } else if(e.key==="Escape"){ setEditId(null); } },
+              onBlur:function(){ saveTitle(it.id); },
+              style:{width:"100%",boxSizing:"border-box",border:"1px solid "+sw.color,borderRadius:3,padding:"4px 7px",fontSize:14,color:C.ink,fontFamily:"inherit",fontWeight:500}})
+          : h("div",{style:{fontSize:14,color:C.ink,fontWeight:500,lineHeight:1.3,cursor:"default"}}, it.title);
         railChildren.push(
-          h("div",{key:it.id||("t"+i),style:{border:"1px solid "+C.panelEdge,borderLeft:"3px solid "+priorityTone(it.priority),background:C.panel,borderRadius:3,padding:"10px 12px",marginBottom:8,display:"flex",gap:10,alignItems:"flex-start"}},
+          h("div",Object.assign({key:it.id||("t"+i),style:{border:"1px solid "+C.panelEdge,borderLeft:"5px solid "+sw.color,background:C.panel,borderRadius:3,padding:"10px 12px",marginBottom:8,display:"flex",gap:10,alignItems:"flex-start",WebkitUserSelect:"none",userSelect:"none"}},ph),
             h("button",{onClick:function(){toggleDone(it.id);},"aria-label":"mark done",style:{marginTop:2,width:16,height:16,flexShrink:0,border:"1.5px solid "+C.faint,borderRadius:3,background:"transparent",cursor:"pointer"}}),
             h("div",{style:{flex:1,minWidth:0}},
-              h("div",{style:{fontSize:14,color:C.ink,fontWeight:500,lineHeight:1.3}}, it.title),
+              titleNode,
               h("div",{style:{display:"flex",gap:10,marginTop:4,flexWrap:"wrap",alignItems:"center"}},
                 h("span",{style:{fontSize:11,color:it.loose?C.amber:C.faint,fontVariantNumeric:"tabular-nums"}}, it.schStart+"–"+it.schEnd+(it.loose?" · slipped in":(it.queued?" · queued":""))),
                 h("span",{style:{fontSize:11,color:C.sub}}, "· "+it.project),
-                spoonDots(it.effort, priorityTone(it.priority))
+                spoonDots(it.effort, sw.color)
               ),
               it.note ? h("div",{style:{fontSize:11.5,color:C.faint,marginTop:5,fontStyle:"italic"}}, it.note) : null
             )
@@ -298,18 +392,18 @@ function App() {
     fitBtns.push(h("span",{key:"sub",style:{fontSize:10.5,color:C.faint,marginLeft:4}}, cur?cur.sub:""));
     children.push(h("div",{key:"fit",style:{display:"flex",flexWrap:"wrap",gap:6,marginTop:8,alignItems:"center"}}, fitBtns));
 
-    var effDots=[]; for(var n=1;n<=5;n++){ (function(n){ effDots.push(h("button",{key:n,onClick:function(){setNewEffort(n);},"aria-label":"effort "+n,style:{width:16,height:16,borderRadius:8,cursor:"pointer",border:"none",background:n<=newEffort?C.amber:C.line}})); })(n); }
+    var effDots=[]; for(var n=1;n<=MAX_SPOON;n++){ (function(n){ effDots.push(h("button",{key:n,onClick:function(){setNewEffort(n);},"aria-label":"effort "+n,style:{width:16,height:16,borderRadius:8,cursor:"pointer",border:"none",background:n<=newEffort?C.amber:C.line}})); })(n); }
+    var effHint = newEffort>=MAX_SPOON ? "≈60+ · decompose?" : "≈"+minToLabel(SPOON_MIN[newEffort]);
     children.push(
       h("div",{key:"capture",style:{marginTop:18,paddingTop:16,borderTop:"1px solid "+C.line}},
         h("input",{value:newTitle,onChange:function(e){setNewTitle(e.target.value);},onKeyDown:function(e){ if(e.key==="Enter") addTask(); },placeholder:"Capture a task — just the title is enough",style:{width:"100%",boxSizing:"border-box",border:"1px solid "+C.panelEdge,borderRadius:3,padding:"10px 12px",fontSize:14,color:C.ink,background:C.panel,fontFamily:"inherit"}}),
         h("div",{style:{display:"flex",gap:16,marginTop:10,alignItems:"center",flexWrap:"wrap"}},
           h("label",{style:{fontSize:12,color:C.sub,display:"inline-flex",alignItems:"center"}}, "effort",
             h("span",{style:{display:"inline-flex",gap:3,marginLeft:8}}, effDots),
-            h("span",{style:{marginLeft:8,fontSize:11,color:C.faint}}, "≈"+minToLabel(SPOON_MIN[newEffort]))
+            h("span",{style:{marginLeft:8,fontSize:11,color:newEffort>=MAX_SPOON?C.amber:C.faint}}, effHint)
           ),
-          h("label",{style:{fontSize:12,color:C.sub,display:"inline-flex",alignItems:"center"}}, "priority",
-            h("input",{type:"range",min:"0",max:"10",value:newPriority,onChange:function(e){setNewPriority(Number(e.target.value));},style:{marginLeft:8,verticalAlign:"middle",accentColor:C.amber}}),
-            h("span",{style:{marginLeft:8,fontSize:11,color:C.faint,fontVariantNumeric:"tabular-nums"}}, newPriority)
+          h("span",{style:{fontSize:12,color:C.sub,display:"inline-flex",alignItems:"center",gap:8}}, "priority",
+            swatchRow(newPriority, function(v){ setNewPriority(v); }, 20)
           ),
           h("button",{onClick:addTask,style:{marginLeft:"auto",background:C.ink,color:C.paper,border:"none",borderRadius:3,padding:"9px 16px",fontSize:13,cursor:"pointer",fontWeight:600}}, "Capture")
         )
@@ -369,15 +463,53 @@ function App() {
     );
   }
 
+  function popupNode(){
+    if(!popup) return null;
+    var task = tasks.filter(function(x){return x.id===popup.id;})[0];
+    if(!task) return null;
+    // clamp so the menu stays on-screen. width ~ edit btn + 5 swatches; height one row (or two if editing).
+    var vw = (typeof window!=="undefined") ? window.innerWidth : 380;
+    var vh = (typeof window!=="undefined") ? window.innerHeight : 700;
+    var W = 250, Hpop = (editId===popup.id) ? 112 : 60;
+    var x = Math.min(popup.x, vw - W - 10); if(x<10) x=10;
+    var y = Math.min(popup.y, vh - Hpop - 10); if(y<10) y=10;
+    var menuChildren = [
+      h("div",{key:"row",style:{display:"flex",alignItems:"center",gap:12}},
+        h("button",{key:"edit",onClick:function(e){ e.stopPropagation(); openEdit(task.id, task.title); },
+          style:{border:"1px solid "+C.panelEdge,background:C.paper,borderRadius:4,padding:"7px 12px",fontSize:13,fontWeight:600,color:C.ink,cursor:"pointer",whiteSpace:"nowrap"}}, "Edit"),
+        swatchRow(task.priority, function(v){ setPriorityFor(task.id, v); }, 24)
+      )
+    ];
+    if(editId===popup.id){
+      menuChildren.push(
+        h("div",{key:"editrow",style:{marginTop:10,display:"flex",gap:6}},
+          h("input",{autoFocus:true,value:draft,onChange:function(e){setDraft(e.target.value);},
+            onKeyDown:function(e){ if(e.key==="Enter"){ saveTitle(task.id); setPopup(null); } else if(e.key==="Escape"){ setEditId(null); } },
+            style:{flex:1,boxSizing:"border-box",border:"1px solid "+C.amber,borderRadius:3,padding:"6px 8px",fontSize:14,fontFamily:"inherit",color:C.ink}}),
+          h("button",{onClick:function(e){ e.stopPropagation(); saveTitle(task.id); setPopup(null); },
+            style:{border:"none",background:C.ink,color:C.paper,borderRadius:3,padding:"6px 12px",fontSize:13,fontWeight:600,cursor:"pointer"}}, "Save")
+        )
+      );
+    }
+    return h("div",{key:"backdrop",onClick:closePopup,onContextMenu:function(e){e.preventDefault();closePopup();},
+        style:{position:"fixed",inset:0,zIndex:50,background:"rgba(28,31,38,0.04)"}},
+      h("div",{onClick:function(e){e.stopPropagation();},
+        style:{position:"fixed",left:x,top:y,zIndex:51,background:C.panel,border:"1px solid "+C.panelEdge,
+          borderRadius:8,padding:"10px 12px",boxShadow:"0 8px 28px rgba(28,31,38,0.18)"}},
+        menuChildren)
+    );
+  }
+
   var tabBtns = [["foreground","Foreground"],["background","Background"],["relaxation","Relaxation"]].map(function(pair){
     var k=pair[0], label=pair[1], on=tab===k;
     return h("button",{key:k,onClick:function(){setTab(k);},style:{flex:1,border:"1px solid "+(on?C.amber:C.panelEdge),background:on?C.amberSoft:"transparent",color:on?C.ink:C.sub,borderRadius:2,padding:"9px 6px",fontSize:13,fontWeight:600,cursor:"pointer"}}, label);
   });
 
   return h("div",{style:{minHeight:"100vh"}},
+    popupNode(),
     h("header",{style:{maxWidth:1180,margin:"0 auto",padding:"max(28px, env(safe-area-inset-top)) 24px 10px"}},
       h("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:8}},
-        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:26,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.1.7"),
+        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:26,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.2"),
         h("div",{style:{fontSize:12.5,color:C.sub,fontStyle:"italic"}}, "the urgent that is always done, and the important that is finally heard")
       ),
       h("div",{id:"status-bar",style:{color:(status.indexOf("Could not")===0||status.indexOf("failed")>-1)?"#a23":C.faint}}, status),
