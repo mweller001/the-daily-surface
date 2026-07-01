@@ -13,14 +13,11 @@
   @media (prefers-reduced-motion: reduce) { * { transition:none !important; } }
   button:focus-visible, input:focus-visible { outline:2px solid #c8741a; outline-offset:2px; }
   ::-webkit-scrollbar { width:8px; } ::-webkit-scrollbar-thumb { background:#d8d3c8; border-radius:4px; }
-  .il-cols { display:grid; grid-template-columns:1.35fr 1fr 1fr; gap:18px; }
-  .il-tabs { display:none; }
-  @media (max-width:860px) {
-    .il-cols { display:block; }
-    .il-cols > section { display:none; }
-    .il-cols > section.il-active { display:block; }
-    .il-tabs { display:flex; }
-  }
+  /* tabs everywhere, single active panel — phone layout used at all widths (PC is secondary/debug) */
+  .il-cols { display:block; }
+  .il-cols > section { display:none; }
+  .il-cols > section.il-active { display:block; }
+  .il-tabs { display:flex; }
   #status-bar { font-size:12px; padding:4px 0; min-height:20px; }
 </style>
 </head>
@@ -801,7 +798,7 @@ function App() {
     );
   }
 
-  var tabBtns = [["foreground","Foreground"],["background","Background"],["relaxation","Relaxation"],["morning","Morning"],["evening","Evening"]].map(function(pair){
+  var tabBtns = [["foreground","Fore"],["background","Back"],["relaxation","Relax"],["morning","Morn"],["evening","Eve"]].map(function(pair){
     var k=pair[0], label=pair[1], on=tab===k;
     return h("button",{key:k,onClick:function(){setTab(k);},style:{flex:1,border:"1px solid "+(on?C.amber:C.panelEdge),background:on?C.amberSoft:"transparent",color:on?C.ink:C.sub,borderRadius:2,padding:"9px 6px",fontSize:13,fontWeight:600,cursor:"pointer"}}, label);
   });
@@ -810,16 +807,16 @@ function App() {
     firePromptNode(),
     editModalNode(),
     popupNode(),
-    h("header",{style:{maxWidth:1180,margin:"0 auto",padding:"max(28px, env(safe-area-inset-top)) 24px 10px"}},
+    h("header",{style:{maxWidth:640,margin:"0",padding:"max(28px, env(safe-area-inset-top)) 24px 10px"}},
       h("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:8}},
-        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.2.9"),
+        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.2.10"),
         h("div",{style:{fontSize:12.5,color:C.sub,fontStyle:"italic"}}, "The important that is placed and the urgent that is done")
       ),
       h("div",{id:"status-bar",style:{color:(status.indexOf("Could not")===0||status.indexOf("failed")>-1)?"#a23":C.faint}}, status),
       h("div",{style:{height:1,background:C.panelEdge}})
     ),
-    h("div",{className:"il-tabs",style:{maxWidth:1180,margin:"0 auto",padding:"10px 24px 0",gap:6}}, tabBtns),
-    h("main",{style:{maxWidth:1180,margin:"0 auto",padding:"18px 24px calc(60px + env(safe-area-inset-bottom))"}},
+    h("div",{className:"il-tabs",style:{maxWidth:640,margin:"0",padding:"10px 24px 0",gap:6}}, tabBtns),
+    h("main",{style:{maxWidth:640,margin:"0",padding:"18px 24px calc(60px + env(safe-area-inset-bottom))"}},
       (tab==="morning" || tab==="evening")
         ? (tab==="morning" ? morningProcess() : eveningProcess())
         : h("div",{className:"il-cols"},
