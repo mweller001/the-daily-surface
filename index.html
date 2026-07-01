@@ -676,24 +676,25 @@ function App() {
       h("div",{style:{fontSize:12.5,color:C.sub,lineHeight:1.55,fontStyle:"italic"}}, text)
     );
   }
+  // Bare functional step: the question carries itself; optional after-the-dash action follows inline.
+  function processStepBare(n, question, action){
+    return h("div",{key:n,style:{display:"flex",gap:14,marginBottom:16,alignItems:"flex-start"}},
+      h("span",{style:{flexShrink:0,width:26,height:26,borderRadius:14,background:C.amberSoft,color:C.amber,
+        display:"inline-flex",alignItems:"center",justifyContent:"center",fontFamily:"Georgia, serif",fontSize:14,fontWeight:700}}, n),
+      h("div",{style:{flex:1,fontSize:15,fontWeight:600,color:C.ink,fontFamily:"Georgia, serif",lineHeight:1.35}},
+        question,
+        action ? h("span",{style:{fontWeight:400,color:C.sub}}, " \u2014 "+action) : null)
+    );
+  }
   function eveningProcess(){
     return h("section",{style:{maxWidth:"54ch"}},
       eyebrow("PM","The Evening Process"),
-      h("p",{style:leadStyle}, "Three questions, in order, each answered honestly and briefly. Its output is a heading for the scout, not a plan."),
-      processStep("1","Position \u2014 where am I, actually, right now?",
-        "The true current coordinates as the day closes; not where one wished or planned to be. The honest statement the scout launches from \u2014 the background cannot scout from a falsified position."),
-      processStep("2","Possibility \u2014 from this honest position, where could I be tomorrow?",
-        "Not the ideal; the possible, given actual current energy, conditions, and constraints."),
-      processStep("3","Alignment \u2014 does the path from here to there move through what matters?",
-        "Not perfectly or completely, but meaningfully: does tomorrow, as currently foreseeable, advance the load-bearing values?"),
-      processNote("Output",
-        "A heading \u2014 precise enough that the scout knows where to range overnight, loose enough that tomorrow's real conditions can shape it. The scanner is then released from the day's accounting."),
-      h("div",{style:{marginTop:20,paddingTop:16,borderTop:"1px solid "+C.line}},
-        h("div",{style:{fontSize:10,letterSpacing:1.5,textTransform:"uppercase",color:C.good,fontWeight:700,marginBottom:8}}, "Closing element"),
-        h("div",{style:{fontSize:16,fontWeight:600,color:C.ink,fontFamily:"Georgia, serif"}}, "\u201CWhat am I grateful for tonight?\u201D"),
-        h("div",{style:{fontSize:12.5,color:C.sub,marginTop:6,lineHeight:1.55}},
-          "Appended at the very end. Present-facing and non-instrumental, distinct from the forward-facing process above \u2014 a focused, honest question, never a survey or a posture. \u201CTonight\u201D anchors it to the concrete good of the particular day.")
-      )
+      h("p",{style:leadStyle}, "Five steps, in order, each answered honestly and briefly."),
+      processStepBare("1","What has been accomplished today?","review memory, tasks, and calendar"),
+      processStepBare("2","What should be scheduled for tomorrow?","review goals, update tasks and calendar"),
+      processStepBare("3","Does the path from here to there move through what matters?",null),
+      processStepBare("4","What are things to consider overnight?",null),
+      processStepBare("5","What are you grateful for tonight?",null)
     );
   }
   function morningProcess(){
@@ -809,7 +810,7 @@ function App() {
     popupNode(),
     h("header",{style:{maxWidth:640,margin:"0",padding:"max(28px, env(safe-area-inset-top)) 24px 10px"}},
       h("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:8}},
-        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.2.10"),
+        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.2.11"),
         h("div",{style:{fontSize:12.5,color:C.sub,fontStyle:"italic"}}, "The important that is placed and the urgent that is done")
       ),
       h("div",{id:"status-bar",style:{color:(status.indexOf("Could not")===0||status.indexOf("failed")>-1)?"#a23":C.faint}}, status),
