@@ -701,12 +701,9 @@ function App() {
     return h("section",{style:{maxWidth:"54ch"}},
       eyebrow("AM","The Morning Process"),
       h("p",{style:leadStyle}, "Three steps, in order."),
-      processStep("1","Scout review \u2014 first, what came back?",
-        "Review what the background returned overnight against the heading set the night before. A quiet scout after a heavy or tiring day is normal \u2014 the background was spent on the day's work and had no surplus to range. It is not a failure."),
-      processStep("2","Completeness check \u2014 is the list complete enough to start?",
-        "Scan the surface; capture any gaps so nothing rides loose in the scanner. Not whether the list is perfect, but whether it is complete enough to launch the day from."),
-      processStep("3","Selection \u2014 what would I be glad tonight I moved?",
-        "Spoons-aware: choose the one or two things that, looked back on at day's end, would most justify the day \u2014 matched honestly to the capacity actually available, not the capacity one wishes for."),
+      processStepBare("1","Scout review \u2014 what returned overnight?",null),
+      processStepBare("2","Update tasks and calendar \u2014 is the list complete enough to begin the day?",null),
+      processStepBare("3","Priorities \u2014 verify what I will be glad of tonight is appropriately placed.",null),
       processNote("Why it runs daily",
         "The evening review keeps the scout directed for about one day; past roughly two days without a review the scout reverts to an undirected, faintly unsettled state (a directed scout feels distinctly better). So the review has about a one-day buffer, then degrades \u2014 which is why it is mechanically a daily process, not an aspirational one.")
     );
@@ -810,7 +807,7 @@ function App() {
     popupNode(),
     h("header",{style:{maxWidth:640,margin:"0",padding:"max(28px, env(safe-area-inset-top)) 24px 10px"}},
       h("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:8}},
-        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.2.11"),
+        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.2.12"),
         h("div",{style:{fontSize:12.5,color:C.sub,fontStyle:"italic"}}, "The important that is placed and the urgent that is done")
       ),
       h("div",{id:"status-bar",style:{color:(status.indexOf("Could not")===0||status.indexOf("failed")>-1)?"#a23":C.faint}}, status),
