@@ -83,7 +83,11 @@ function readTask(row) {
 }
 function readAppt(row) {
   var d = row.data || {};
-  return { id: row.id, title: d.title || "(appointment)", start: d.start || "09:00", end: d.end || "10:00" };
+  // prep/travel are the meld's two extra points, in minutes. Optional; absent = 0.
+  // (When the Google Calendar layer lands, these come from the event's extendedProperties.)
+  return { id: row.id, title: d.title || "(appointment)", start: d.start || "09:00", end: d.end || "10:00",
+    prep: typeof d.prep === "number" ? d.prep : 0,
+    travel: typeof d.travel === "number" ? d.travel : 0 };
 }
 // Single source of truth for serializing a task back to its stored data object.
 // Every write path uses this so no field (incl. prompt fields) can be dropped.
@@ -357,14 +361,20 @@ function App() {
   var schedule = useMemo(function(){
     var horizon = nowMin + 48*60; // 48h ahead; revisit when calendar events bring real dates
     function toMin(s){ var p=s.split(":"); return (+p[0])*60 + (+p[1]); }
-    // events: fixed blocks, sorted by start, only those not already past
-    var blocks = appts.map(function(a){ return Object.assign({}, a, { s:toMin(a.start), e:toMin(a.end) }); })
+    // events: fixed blocks, sorted by reserved front edge, only those not already past.
+    // s = event start; e = event end; reserveStart = start - travel - prep (the leave/prep edge
+    // that tasks must pack against, since prep+travel is spoken-for time before the event).
+    var blocks = appts.map(function(a){
+        var s = toMin(a.start), e = toMin(a.end);
+        var reserveStart = s - (a.travel||0) - (a.prep||0);
+        return Object.assign({}, a, { s:s, e:e, reserveStart:reserveStart,
+          prepStart: s - (a.travel||0) - (a.prep||0), travelStart: s - (a.travel||0) }); })
       .filter(function(b){ return b.e > nowMin; })
-      .sort(function(x,y){ return x.s-y.s; });
+      .sort(function(x,y){ return x.reserveStart-y.reserveStart; });
     // slots: the open time between now→first event, event→event, last event→horizon
     var slots=[], cursor=nowMin, i;
     for (i=0;i<blocks.length;i++){
-      if (blocks[i].s > cursor){ slots.push({ s:cursor, e:blocks[i].s, after:i }); } // gap before block i
+      if (blocks[i].reserveStart > cursor){ slots.push({ s:cursor, e:blocks[i].reserveStart, after:i }); } // gap before block i's reserved edge
       cursor = Math.max(cursor, blocks[i].e);
     }
     if (cursor < horizon){ slots.push({ s:cursor, e:horizon, after:blocks.length }); } // tail slot
@@ -403,7 +413,8 @@ function App() {
     }
     for (i=0;i<blocks.length;i++){
       pushSlotTasks(i);                 // tasks in the slot before event i
-      railItems.push(Object.assign({ type:"appt", startMin:blocks[i].s, endMin:blocks[i].e }, blocks[i]));
+      railItems.push(Object.assign({ type:"appt", startMin:blocks[i].reserveStart, endMin:blocks[i].e,
+        eventStartMin:blocks[i].s, prepStartMin:blocks[i].prepStart, travelStartMin:blocks[i].travelStart }, blocks[i]));
     }
     pushSlotTasks(blocks.length);       // tasks in the tail slot (after last event)
     unfitted.forEach(function(p){ railItems.push(Object.assign({ type:"task", unfitted:true }, p)); });
@@ -519,61 +530,115 @@ function App() {
   }
 
   function foreground(){
-    // keep unfitted tasks (no real time) always; drop fitted items / events only once elapsed
-    var items = schedule.railItems.filter(function(it){ return it.unfitted || it.endMin > nowMin; });
-    var railChildren = [
-      h("div",{key:"nowbar",style:{display:"flex",alignItems:"center",gap:8,marginBottom:12}},
-        h("span",{style:{fontSize:10.5,fontWeight:700,letterSpacing:1,color:C.nowline,fontVariantNumeric:"tabular-nums"}}, "NOW · "+fmtMin(nowMin)),
-        h("span",{style:{flex:1,height:2,background:C.nowline,opacity:0.5}})
-      )
-    ];
-    if (items.length===0){
-      railChildren.push(h("div",{key:"empty",style:{fontSize:13,color:C.faint,fontStyle:"italic",padding:"8px 0"}}, "Nothing scheduled ahead. Capture something below."));
+    // ---- Proportional time-canvas (meld). Height ∝ duration; "now" anchored at the top;
+    // scroll downward into the day. Fitted items positioned absolutely by minute; unfitted
+    // (past-horizon) tasks listed below in flow. Reserved blocks (prep→travel→event) are
+    // hatched; tasks are solid, colored by priority swatch. Scale is PX_PER_MIN. ----
+    var PX_PER_MIN = 1.6;
+    var fitted = schedule.railItems.filter(function(it){ return !it.unfitted && it.endMin > nowMin; });
+    var unfittedItems = schedule.railItems.filter(function(it){ return it.unfitted; });
+
+    // canvas top = now; bottom = end of the last fitted thing (min 90 min of runway so it never collapses)
+    var lastEnd = nowMin + 90;
+    fitted.forEach(function(it){ if(it.endMin>lastEnd) lastEnd = it.endMin; });
+    var spanMin = Math.max(90, lastEnd - nowMin);
+    var canvasH = spanMin * PX_PER_MIN;
+    var yOf = function(m){ return (m - nowMin) * PX_PER_MIN; };
+    var HATCH = function(rgb){ return "repeating-linear-gradient(45deg,"+
+      "rgba("+rgb+",0.55) 0,rgba("+rgb+",0.55) 7px,rgba("+rgb+",0.14) 7px,rgba("+rgb+",0.14) 14px)"; };
+
+    var canvasKids = [];
+
+    // hour grid + labels
+    for (var hm = Math.ceil(nowMin/60)*60; hm <= lastEnd; hm += 60){
+      canvasKids.push(h("div",{key:"g"+hm,style:{position:"absolute",left:44,right:0,top:yOf(hm),
+        borderTop:"1px solid "+C.line,pointerEvents:"none"}}));
+      canvasKids.push(h("div",{key:"gl"+hm,style:{position:"absolute",left:0,width:40,top:yOf(hm)-7,
+        textAlign:"right",fontSize:10,color:C.faint,fontVariantNumeric:"tabular-nums",pointerEvents:"none"}}, fmtMin(hm)));
     }
-    var unfittedShown = false;
-    items.forEach(function(it,i){
-      if (it.type==="task" && it.unfitted && !unfittedShown){
-        unfittedShown = true;
-        railChildren.push(
-          h("div",{key:"unfit-div",style:{display:"flex",alignItems:"center",gap:8,margin:"14px 0 10px"}},
-            h("span",{style:{fontSize:10,letterSpacing:1,textTransform:"uppercase",color:C.cold,fontWeight:700}}, "Doesn't fit before the horizon"),
-            h("span",{style:{flex:1,height:1,background:C.panelEdge}})
-          )
-        );
-      }
+    // now line
+    canvasKids.push(h("div",{key:"nowl",style:{position:"absolute",left:0,right:0,top:0,
+      borderTop:"2px solid "+C.nowline,zIndex:4,pointerEvents:"none"}}));
+    canvasKids.push(h("div",{key:"nowll",style:{position:"absolute",left:0,width:40,top:-7,textAlign:"right",
+      fontSize:10,fontWeight:700,color:C.nowline,fontVariantNumeric:"tabular-nums",zIndex:4}}, fmtMin(nowMin)));
+
+    // blocks
+    fitted.forEach(function(it,i){
+      var top = Math.max(0, yOf(it.startMin));
       if (it.type==="appt"){
-        var active = (nowMin>=it.startMin && nowMin<it.endMin);
-        railChildren.push(
-          h("div",{key:it.id||("a"+i),style:{background:C.fixed,color:"#dfe3ea",borderRadius:3,padding:"10px 12px",marginBottom:10,outline:active?("2px solid "+C.amber):"none"}},
-            h("div",{style:{fontSize:10.5,letterSpacing:1,textTransform:"uppercase",opacity:0.7,marginBottom:2}}, (active?"Now · in progress":"Fixed")+" · "+it.start+"–"+it.end),
-            h("div",{style:{fontSize:14,fontWeight:600}}, it.title)
-          )
-        );
+        // three reserved sub-segments: prep (yellow hatch) → travel (orange hatch) → event (solid green)
+        var segs = [];
+        if (it.prepStartMin < it.travelStartMin){ segs.push({a:it.prepStartMin,b:it.travelStartMin,bg:HATCH("244,194,13"),edge:"#e6cf6f",lab:"Prep",ink:"#7a6410"}); }
+        if (it.travelStartMin < it.eventStartMin){ segs.push({a:it.travelStartMin,b:it.eventStartMin,bg:HATCH("245,123,19"),edge:"#e0a066",lab:"Travel",ink:"#8a4a10"}); }
+        var evActive = (nowMin>=it.eventStartMin && nowMin<it.endMin);
+        segs.push({a:it.eventStartMin,b:it.endMin,bg:"rgba(93,112,82,0.34)",edge:C.good,lab:it.title,ink:"#2f3d29",solid:true,active:evActive});
+        segs.forEach(function(sg,si){
+          var segTop = Math.max(0,yOf(sg.a)), segH = Math.max(13,(sg.b-sg.a)*PX_PER_MIN-1);
+          canvasKids.push(
+            h("div",{key:(it.id||"a"+i)+"-"+si,style:{position:"absolute",left:50,right:6,top:segTop,height:segH,
+              background:sg.bg,border:"1px solid "+sg.edge,borderRadius:5,padding:"2px 8px",overflow:"hidden",boxSizing:"border-box",
+              outline:sg.active?("2px solid "+C.amber):"none"}},
+              h("div",{style:{fontSize:10,letterSpacing:.4,textTransform:"uppercase",color:sg.ink,fontWeight:700}},
+                sg.solid ? (sg.active?"Now · ":"")+"" : sg.lab),
+              segH>28 ? h("div",{style:{fontSize:12.5,fontWeight:600,color:sg.solid?"#2c3a26":sg.ink,lineHeight:1.2}}, sg.lab) : null
+            )
+          );
+        });
       } else {
         var sw = prioritySwatch(it.priority);
         var ph = pressHandlers(it);
-        var titleNode = h("div",{style:{fontSize:14,color:C.ink,fontWeight:500,lineHeight:1.3}}, it.title);
-        var promptTag = it.fireAt ? h("span",{style:{fontSize:11,color:C.cold}}, "· ⏰ "+it.fireAt) : null;
-        railChildren.push(
-          h("div",Object.assign({key:it.id||("t"+i),style:{border:"1px solid "+C.panelEdge,borderLeft:"5px solid "+sw.color,background:C.panel,borderRadius:3,padding:"10px 12px",marginBottom:8,display:"flex",gap:10,alignItems:"flex-start",WebkitUserSelect:"none",userSelect:"none",touchAction:"pan-y"}},ph),
-            h("button",{onClick:function(){toggleDone(it.id);},"aria-label":"mark done",style:{marginTop:2,width:16,height:16,flexShrink:0,border:"1.5px solid "+C.faint,borderRadius:3,background:"transparent",cursor:"pointer"}}),
-            h("div",{style:{flex:1,minWidth:0}},
-              titleNode,
-              h("div",{style:{display:"flex",gap:10,marginTop:4,flexWrap:"wrap",alignItems:"center"}},
-                h("span",{style:{fontSize:11,color:it.unfitted?C.cold:C.faint,fontVariantNumeric:"tabular-nums"}},
-                  it.unfitted ? "doesn't fit ahead" : (it.schStart+"–"+it.schEnd)),
-                h("span",{style:{fontSize:11,color:C.sub}}, "· "+it.project),
-                promptTag,
-                spoonDots(it.effort, sw.color)
-              ),
-              it.note ? h("div",{style:{fontSize:11.5,color:C.faint,marginTop:5,fontStyle:"italic"}}, it.note) : null
+        var bh = Math.max(13,(it.endMin-it.startMin)*PX_PER_MIN-1);
+        canvasKids.push(
+          h("div",Object.assign({key:it.id||("t"+i),style:{position:"absolute",left:50,right:6,top:top,height:bh,
+            background:sw.color,border:"1px solid rgba(0,0,0,0.12)",borderRadius:5,padding:"2px 8px",overflow:"hidden",
+            boxSizing:"border-box",color:"#fff",WebkitUserSelect:"none",userSelect:"none",touchAction:"pan-y",
+            display:"flex",alignItems:"flex-start",gap:7}},ph),
+            h("button",{onClick:function(e){e.stopPropagation();toggleDone(it.id);},"aria-label":"mark done",
+              style:{marginTop:2,width:14,height:14,flexShrink:0,border:"1.5px solid rgba(255,255,255,0.8)",borderRadius:3,background:"transparent",cursor:"pointer"}}),
+            h("div",{style:{flex:1,minWidth:0,overflow:"hidden"}},
+              h("div",{style:{fontSize:13,fontWeight:600,lineHeight:1.2,textShadow:"0 1px 1px rgba(0,0,0,0.25)",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}, it.title),
+              bh>30 ? h("div",{style:{fontSize:10.5,opacity:0.92,fontVariantNumeric:"tabular-nums",marginTop:1}}, it.schStart+"–"+it.schEnd+" · "+minToLabel(it.dur)) : null
             )
           )
         );
       }
     });
 
-    var children = [ h("div",{key:"rail",style:{border:"1px solid "+C.line,borderRadius:4,padding:"12px 12px 12px 14px",background:"rgba(255,255,255,0.4)"}}, railChildren) ];
+    var canvas = h("div",{key:"canvas",style:{position:"relative",height:canvasH,marginTop:6}}, canvasKids);
+
+    var railWrap = h("div",{key:"rail",style:{border:"1px solid "+C.line,borderRadius:4,padding:"12px 10px 14px 12px",
+      background:"rgba(255,255,255,0.4)",overflow:"hidden"}}, canvas);
+
+    var children = [ railWrap ];
+
+    // overflow (past-horizon) tasks — listed in flow below the canvas, dashed, priority-colored
+    if (unfittedItems.length){
+      var ofKids = [ h("div",{key:"ofhead",style:{display:"flex",alignItems:"center",gap:8,margin:"2px 0 10px"}},
+        h("span",{style:{fontSize:10,letterSpacing:1,textTransform:"uppercase",color:C.cold,fontWeight:700}}, "Doesn't fit before the horizon"),
+        h("span",{style:{flex:1,height:1,background:C.panelEdge}})) ];
+      unfittedItems.forEach(function(it,i){
+        var sw = prioritySwatch(it.priority);
+        var ph = pressHandlers(it);
+        ofKids.push(
+          h("div",Object.assign({key:it.id||("u"+i),style:{border:"1px dashed "+sw.color,borderLeft:"5px solid "+sw.color,
+            background:C.panel,borderRadius:3,padding:"9px 12px",marginBottom:8,display:"flex",gap:10,alignItems:"flex-start",
+            WebkitUserSelect:"none",userSelect:"none",touchAction:"pan-y"}},ph),
+            h("button",{onClick:function(e){e.stopPropagation();toggleDone(it.id);},"aria-label":"mark done",
+              style:{marginTop:2,width:16,height:16,flexShrink:0,border:"1.5px solid "+C.faint,borderRadius:3,background:"transparent",cursor:"pointer"}}),
+            h("div",{style:{flex:1,minWidth:0}},
+              h("div",{style:{fontSize:14,color:C.ink,fontWeight:500,lineHeight:1.3}}, it.title),
+              h("div",{style:{display:"flex",gap:10,marginTop:4,flexWrap:"wrap",alignItems:"center"}},
+                h("span",{style:{fontSize:11,color:C.cold}}, "doesn't fit ahead · "+minToLabel(it.dur)),
+                spoonDots(it.effort, sw.color)))
+          )
+        );
+      });
+      children.push(h("div",{key:"overflow",style:{marginTop:12}}, ofKids));
+    }
+
+    if (fitted.length===0 && unfittedItems.length===0){
+      children.push(h("div",{key:"empty",style:{fontSize:13,color:C.faint,fontStyle:"italic",padding:"10px 2px"}}, "Nothing scheduled ahead. Capture something below."));
+    }
 
     if (topBackground){
       children.push(
@@ -805,7 +870,7 @@ function App() {
     popupNode(),
     h("header",{style:{maxWidth:640,margin:"0",padding:"max(28px, env(safe-area-inset-top)) 24px 10px"}},
       h("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:8}},
-        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.2.13"),
+        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.2.15"),
         h("div",{style:{fontSize:12.5,color:C.sub,fontStyle:"italic"}}, "The important that is placed and the urgent that is done")
       ),
       h("div",{id:"status-bar",style:{color:(status.indexOf("Could not")===0||status.indexOf("failed")>-1)?"#a23":C.faint}}, status),
