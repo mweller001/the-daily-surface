@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Daily Surface — Calendar Write Test</title>
+<style>
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+       max-width:640px;margin:0 auto;padding:24px 18px;background:#f3f1ec;color:#2b2b2b;line-height:1.5;}
+  h1{font-size:1.2rem;font-family:Georgia,serif;}
+  button{font-size:1rem;padding:11px 20px;border:none;border-radius:6px;background:#2f6f4e;color:#fff;
+         cursor:pointer;margin:6px 8px 6px 0;}
+  button.del{background:#b02a1f;}
+  button:disabled{background:#9bbbaa;opacity:.5;cursor:default;}
+  #out{margin-top:18px;padding:14px;background:#fff;border:1px solid #ddd;border-radius:8px;
+       white-space:pre-wrap;font-size:.9rem;min-height:40px;}
+  .err{color:#b02a1f;}
+  .ok{color:#2f6f4e;font-weight:600;}
+  a{color:#2f6f4e;}
+  code{background:#eee;padding:1px 4px;border-radius:3px;font-size:.85rem;}
+</style>
+</head>
+<body>
+  <h1>Daily Surface — Calendar Write Test</h1>
+  <p>This proves <strong>write</strong> access works. It requests write permission, creates a clearly-labeled throwaway event about 3 hours from now on your <em>primary</em> calendar, and confirms it landed. Then you can delete it with one click so it doesn't linger.</p>
+
+  <button id="connectBtn" disabled>Loading Google…</button>
+  <button id="createBtn" disabled>Create test event</button>
+  <button id="deleteBtn" class="del" disabled>Delete test event</button>
+  <div id="out">Not connected yet.</div>
+
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script>
+  var CLIENT_ID = "420326114521-ov77gi8f8hfgg7knfaa9qv3i1cvobm21.apps.googleusercontent.com";
+  // WRITE scope — this is the thing under test
+  var SCOPE = "https://www.googleapis.com/auth/calendar.events";
+
+  var out = document.getElementById("out");
+  var connectBtn = document.getElementById("connectBtn");
+  var createBtn = document.getElementById("createBtn");
+  var deleteBtn = document.getElementById("deleteBtn");
+  var tokenClient = null, accessToken = null, createdEventId = null;
+
+  function log(msg, cls){ out.innerHTML = cls ? '<span class="'+cls+'">'+msg+'</span>' : msg; }
+
+  var waitGis = setInterval(function(){
+    if (window.google && google.accounts && google.accounts.oauth2){
+      clearInterval(waitGis);
+      tokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: CLIENT_ID,
+        scope: SCOPE,
+        callback: function(resp){
+          if (resp.error){ log("Authorization failed: "+resp.error+" — "+(resp.error_description||""), "err"); return; }
+          accessToken = resp.access_token;
+          // report what scopes were actually granted — this is the key diagnostic
+          var granted = resp.scope || "(scope not reported)";
+          var hasWrite = granted.indexOf("calendar.events") !== -1;
+          log("Authorized ✓\nScopes granted: "+granted+"\n\n"+
+              (hasWrite ? "Write scope IS present — click \"Create test event\"."
+                        : "⚠ Write scope NOT granted — creating an event will fail. This tells us the consent didn't include write."),
+              hasWrite ? "ok" : "err");
+          createBtn.disabled = false;
+        }
+      });
+      connectBtn.disabled = false;
+      connectBtn.textContent = "Connect (request write access)";
+    }
+  }, 100);
+
+  connectBtn.onclick = function(){
+    if (!tokenClient){ log("Google library not ready.", "err"); return; }
+    tokenClient.requestAccessToken({ prompt: "consent" });
+  };
+
+  createBtn.onclick = function(){
+    if (!accessToken){ log("Not authorized yet.", "err"); return; }
+    var start = new Date(Date.now() + 3*60*60*1000);      // +3h
+    var end   = new Date(Date.now() + 3.5*60*60*1000);    // +3.5h
+    var body = {
+      summary: "🧪 Daily Surface WRITE TEST (safe to delete)",
+      description: "Created by the write-proof test to confirm calendar write access. Safe to delete.",
+      start: { dateTime: start.toISOString() },
+      end:   { dateTime: end.toISOString() },
+      // prove extendedProperties.private works too — this is where prep/travel will live
+      extendedProperties: { "private": { "dsPrep": "30", "dsTravel": "20" } }
+    };
+    log("Creating event…");
+    fetch("https://www.googleapis.com/calendar/v3/calendars/primary/events", {
+      method: "POST",
+      headers: { "Authorization": "Bearer "+accessToken, "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    })
+    .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, status:r.status, j:j}; }); })
+    .then(function(res){
+      if (!res.ok){
+        log("Write FAILED (HTTP "+res.status+"):\n"+ (res.j.error ? JSON.stringify(res.j.error,null,2) : JSON.stringify(res.j)), "err");
+        return;
+      }
+      createdEventId = res.j.id;
+      var link = res.j.htmlLink || "";
+      var ep = res.j.extendedProperties && res.j.extendedProperties.private ? JSON.stringify(res.j.extendedProperties.private) : "(none returned)";
+      log("Write SUCCEEDED ✓\n\nEvent created on your primary calendar:\n  \""+res.j.summary+"\"\n  starts ~3h from now\n  id: "+createdEventId+
+          "\n  extendedProperties.private read back: "+ep+
+          "\n\n"+(link?("View: "+link+"\n\n"):"")+
+          "Now click \"Delete test event\" to remove it.", "ok");
+      deleteBtn.disabled = false;
+    })
+    .catch(function(e){ log("Write error: "+e.message, "err"); });
+  };
+
+  deleteBtn.onclick = function(){
+    if (!createdEventId){ log("No test event to delete.", "err"); return; }
+    log("Deleting…");
+    fetch("https://www.googleapis.com/calendar/v3/calendars/primary/events/"+encodeURIComponent(createdEventId), {
+      method: "DELETE",
+      headers: { "Authorization": "Bearer "+accessToken }
+    })
+    .then(function(r){
+      if (r.status === 204 || r.ok){
+        log("Deleted ✓ — the test event has been removed from your calendar. Write + delete both confirmed working.", "ok");
+        deleteBtn.disabled = true; createdEventId = null;
+      } else {
+        return r.json().then(function(j){ log("Delete failed (HTTP "+r.status+"): "+JSON.stringify(j.error||j), "err"); });
+      }
+    })
+    .catch(function(e){ log("Delete error: "+e.message, "err"); });
+  };
+</script>
+</body>
+</html>
