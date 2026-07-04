@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Daily Surface — Calendar Auth Test</title>
+<style>
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+       max-width:640px;margin:0 auto;padding:24px 18px;background:#f3f1ec;color:#2b2b2b;line-height:1.5;}
+  h1{font-size:1.2rem;font-family:Georgia,serif;}
+  button{font-size:1rem;padding:11px 20px;border:none;border-radius:6px;background:#2f6f4e;color:#fff;
+         cursor:pointer;margin:6px 0;}
+  button:disabled{background:#9bbbaa;opacity:.5;cursor:default;}
+  #out{margin-top:18px;padding:14px;background:#fff;border:1px solid #ddd;border-radius:8px;
+       white-space:pre-wrap;font-size:.9rem;min-height:40px;}
+  .cal{padding:6px 0;border-bottom:1px solid #eee;}
+  .cal .nm{font-weight:600;}
+  .cal .meta{font-size:.8rem;color:#777;}
+  .swatch{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:7px;vertical-align:-1px;}
+  .err{color:#b02a1f;}
+  .ok{color:#2f6f4e;font-weight:600;}
+</style>
+</head>
+<body>
+  <h1>Daily Surface — Calendar Auth Test</h1>
+  <p>This proves the Google setup works. Click connect, authorize in the popup, and it will list every calendar this app can see — which should include your default calendar and Anastasia's shared one.</p>
+
+  <button id="connectBtn" disabled>Loading Google…</button>
+  <div id="out">Not connected yet.</div>
+
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script>
+  // ---- CONFIG ----
+  var CLIENT_ID = "420326114521-ov77gi8f8hfgg7knfaa9qv3i1cvobm21.apps.googleusercontent.com";
+  // read+write events scope (so we won't need to re-consent when we add event creation later)
+  var SCOPE = "https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.readonly";
+
+  var out = document.getElementById("out");
+  var connectBtn = document.getElementById("connectBtn");
+  var tokenClient = null;
+  var accessToken = null;
+
+  function log(msg, cls){ out.innerHTML = cls ? '<span class="'+cls+'">'+msg+'</span>' : msg; }
+
+  // wait for the GIS library to load, then init the token client
+  var waitGis = setInterval(function(){
+    if (window.google && google.accounts && google.accounts.oauth2){
+      clearInterval(waitGis);
+      tokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: CLIENT_ID,
+        scope: SCOPE,
+        callback: function(resp){
+          if (resp.error){ log("Authorization failed: "+resp.error+" — "+(resp.error_description||""), "err"); return; }
+          accessToken = resp.access_token;
+          log("Authorized ✓  Fetching your calendars…", "ok");
+          listCalendars();
+        }
+      });
+      connectBtn.disabled = false;
+      connectBtn.textContent = "Connect Google Calendar";
+    }
+  }, 100);
+
+  connectBtn.onclick = function(){
+    if (!tokenClient){ log("Google library not ready yet — wait a moment and retry.", "err"); return; }
+    // triggers the popup: account choose → consent → token
+    tokenClient.requestAccessToken({ prompt: "consent" });
+  };
+
+  // list all calendars the account can see (REST call, token in the header)
+  function listCalendars(){
+    fetch("https://www.googleapis.com/calendar/v3/users/me/calendarList", {
+      headers: { "Authorization": "Bearer " + accessToken }
+    })
+    .then(function(r){
+      if (!r.ok) throw new Error("HTTP "+r.status+" "+r.statusText);
+      return r.json();
+    })
+    .then(function(data){
+      var items = data.items || [];
+      var html = '<div class="ok">Authorized ✓ — '+items.length+' calendar(s) visible to this app:</div><br>';
+      items.forEach(function(c){
+        var color = c.backgroundColor || "#ccc";
+        html += '<div class="cal">'+
+          '<span class="swatch" style="background:'+color+'"></span>'+
+          '<span class="nm">'+ (c.summary||"(unnamed)") +'</span>'+
+          (c.primary ? ' <span class="meta">— your primary</span>' : '')+
+          '<div class="meta">id: '+c.id+'  ·  access: '+(c.accessRole||"?")+'</div>'+
+        '</div>';
+      });
+      html += '<br><span class="meta">If Anastasia\'s calendar is in this list with access "reader" or better, the shared-read path works and we can read both.</span>';
+      out.innerHTML = html;
+    })
+    .catch(function(e){ log("Calendar list failed: "+e.message, "err"); });
+  }
+</script>
+</body>
+</html>
