@@ -767,6 +767,51 @@ function App() {
 
     var canvasKids = [];
 
+    // ---- EVENT COLLISION COLUMNS ----------------------------------------------------------
+    // Two events collide when their FULL reserved blocks (prep+travel+event) overlap in time.
+    // Colliding events lay side-by-side: Mark (owner "me") on the LEFT, Anastasia ("her") on the
+    // RIGHT — so column position itself signals whose event it is. Same-owner overlaps (rare
+    // double-book) split that owner's side further. Non-colliding events stay full width.
+    // Reserved span = [reserveStart(prepStartMin), endMin]. Column geometry is attached to each
+    // appt as colFrac {L,R} in 0..1 across the block area, consumed by the segment renderer.
+    (function assignColumns(){
+      var apptItems = fitted.filter(function(it){ return it.type==="appt"; });
+      // reserved span helpers
+      var spanA = function(it){ return it.prepStartMin; };  // earliest reserved edge
+      var spanB = function(it){ return it.endMin; };        // event end
+      // find connected overlap groups (transitive: A-B overlap, B-C overlap → {A,B,C} one group)
+      var used = {};
+      apptItems.forEach(function(seed, si){
+        if (used[si]) return;
+        var group = [si]; used[si] = true;
+        // grow the group by any item overlapping ANY member's reserved span
+        var grew = true;
+        while (grew){ grew = false;
+          apptItems.forEach(function(cand, ci){
+            if (used[ci]) return;
+            var overlapsGroup = group.some(function(gi){
+              return spanA(apptItems[ci]) < spanB(apptItems[gi]) && spanA(apptItems[gi]) < spanB(apptItems[ci]);
+            });
+            if (overlapsGroup){ group.push(ci); used[ci]=true; grew=true; }
+          });
+        }
+        // assign columns within the group. Default full width if group of 1.
+        if (group.length === 1){ apptItems[group[0]].colFrac = {L:0, R:1}; return; }
+        // split by owner side: me → left half, her → right half; within a side, sub-split by count.
+        var meIdx = group.filter(function(gi){ return apptItems[gi].owner!=="her"; });
+        var herIdx = group.filter(function(gi){ return apptItems[gi].owner==="her"; });
+        var bothSides = meIdx.length>0 && herIdx.length>0;
+        function place(idxList, sideL, sideR){
+          var n = idxList.length; if (!n) return;
+          var w = (sideR - sideL) / n;
+          idxList.forEach(function(gi, k){ apptItems[gi].colFrac = {L: sideL + k*w, R: sideL + (k+1)*w}; });
+        }
+        if (bothSides){ place(meIdx, 0, 0.5); place(herIdx, 0.5, 1); }
+        else { place(group, 0, 1); } // all same owner → split evenly across full width
+      });
+    })();
+
+
     // hour grid + labels
     for (var hm = Math.ceil(originMin/60)*60; hm <= lastEnd; hm += 60){
       canvasKids.push(h("div",{key:"g"+hm,style:{position:"absolute",left:44,right:0,top:yOf(hm),
@@ -802,17 +847,23 @@ function App() {
         if (it.travelStartMin < it.eventStartMin){ segs.push({a:it.travelStartMin,b:it.eventStartMin,bg:HATCH(pal.travRGB),edge:pal.travEdge,lab:"Travel: "+it.title,ink:HATCH_INK}); }
         var evActive = (nowMin>=it.eventStartMin && nowMin<it.endMin);
         segs.push({a:it.eventStartMin,b:it.endMin,bg:pal.evBg,edge:pal.evEdge,lab:it.title,ink:EVENT_INK,solid:true,active:evActive});
+        var cf = it.colFrac || {L:0, R:1};
+        var split = (cf.L>0 || cf.R<1);
+        // block area = from 50px (after time gutter) to 6px-from-right. Columns divide that area.
+        // left = 50 + L*(area); width = (R-L)*(area); area = (100% - 50 - 6). calc handles responsive width.
+        var colLeftCss = "calc(50px + "+cf.L+" * (100% - 56px)"+(split&&cf.L>0?" + 2px":"")+")";
+        var colWidthCss = "calc("+(cf.R-cf.L)+" * (100% - 56px)"+(split?" - "+((cf.L>0?2:0)+(cf.R<1?2:0))+"px":"")+")";
         segs.forEach(function(sg,si){
           var segTop = Math.max(0,yOf(sg.a)), segH = Math.max(13,(sg.b-sg.a)*PX_PER_MIN-1);
           canvasKids.push(
-            h("div",{key:(it.id||"a"+i)+"-"+si,style:{position:"absolute",left:50,right:6,top:segTop,height:segH,
+            h("div",{key:(it.id||"a"+i)+"-"+si,style:{position:"absolute",left:colLeftCss,width:colWidthCss,top:segTop,height:segH,
               background:sg.bg,border:"1px solid "+sg.edge,borderRadius:5,padding:"2px 8px",overflow:"hidden",boxSizing:"border-box",
               outline:sg.active?("2px solid "+C.amber):"none"}},
               h("div",{style:{fontSize:10,letterSpacing:.4,textTransform:"uppercase",color:sg.ink,fontWeight:700,
                 textShadow:sg.solid?"0 1px 1px rgba(0,0,0,0.25)":"none"}},
                 sg.solid ? (sg.active?"Now · ":"")+"" : sg.lab),
               segH>28 ? h("div",{style:{fontSize:12.5,fontWeight:600,color:sg.ink,lineHeight:1.2,
-                textShadow:sg.solid?"0 1px 1px rgba(0,0,0,0.25)":"none"}}, sg.lab) : null
+                textShadow:sg.solid?"0 1px 1px rgba(0,0,0,0.25)":"none",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}, sg.lab) : null
             )
           );
         });
@@ -1102,7 +1153,7 @@ function App() {
     popupNode(),
     h("header",{style:{maxWidth:640,margin:"0",padding:"max(28px, env(safe-area-inset-top)) 24px 10px"}},
       h("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:8}},
-        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.3.9"),
+        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.4.0"),
         h("div",{style:{fontSize:12.5,color:C.sub,fontStyle:"italic"}}, "The important that is placed and the urgent that is done")
       ),
       h("div",{id:"status-bar",style:{color:(status.indexOf("Could not")===0||status.indexOf("failed")>-1)?"#a23":C.faint}}, status),
