@@ -546,9 +546,16 @@ function App() {
     // that tasks must pack against, since prep+travel is spoken-for time before the event).
     var blocks = appts.map(function(a){
         var s = toMin(a.start), e = toMin(a.end);
-        var reserveStart = s - (a.travel||0) - (a.prep||0);
-        return Object.assign({}, a, { s:s, e:e, reserveStart:reserveStart,
-          prepStart: s - (a.travel||0) - (a.prep||0), travelStart: s - (a.travel||0) }); })
+        // In-progress event: started at/before now, ends after now. Its prep and travel are
+        // already spent (past), so suppress them — the reserved block collapses to just the
+        // live event. reserveStart becomes the event start itself (no pre-buffer). This both
+        // fixes the past-clipped-segment layout corruption and yields correct "you're in this
+        // until end" behavior; open-time still starts from e (the event end) via the slot math.
+        var inProgress = (s <= nowMin && e > nowMin);
+        var reserveStart = inProgress ? s : (s - (a.travel||0) - (a.prep||0));
+        return Object.assign({}, a, { s:s, e:e, reserveStart:reserveStart, inProgress:inProgress,
+          prepStart: inProgress ? s : (s - (a.travel||0) - (a.prep||0)),
+          travelStart: inProgress ? s : (s - (a.travel||0)) }); })
       .filter(function(b){ return b.e > nowMin; })
       .sort(function(x,y){ return x.reserveStart-y.reserveStart; });
     // slots: the open time between now→first event, event→event, last event→horizon
@@ -594,7 +601,8 @@ function App() {
     for (i=0;i<blocks.length;i++){
       pushSlotTasks(i);                 // tasks in the slot before event i
       railItems.push(Object.assign({ type:"appt", startMin:blocks[i].reserveStart, endMin:blocks[i].e,
-        eventStartMin:blocks[i].s, prepStartMin:blocks[i].prepStart, travelStartMin:blocks[i].travelStart }, blocks[i]));
+        eventStartMin:blocks[i].s, prepStartMin:blocks[i].prepStart, travelStartMin:blocks[i].travelStart,
+        inProgress:blocks[i].inProgress }, blocks[i]));
     }
     pushSlotTasks(blocks.length);       // tasks in the tail slot (after last event)
     unfitted.forEach(function(p){ railItems.push(Object.assign({ type:"task", unfitted:true }, p)); });
@@ -746,10 +754,13 @@ function App() {
     fitted.forEach(function(it,i){
       var top = Math.max(0, yOf(it.startMin));
       if (it.type==="appt"){
-        // three reserved sub-segments: prep (yellow hatch) → travel (orange hatch) → event (solid green)
+        // three reserved sub-segments: prep (yellow hatch) → travel (orange hatch) → event (solid).
+        // Labeled with the event title so a buffer is bound to its event ("Prep: Test2").
+        // In-progress events have prepStart==travelStart==eventStart, so the two hatch segments
+        // are naturally skipped by the < checks — only the live event renders.
         var segs = [];
-        if (it.prepStartMin < it.travelStartMin){ segs.push({a:it.prepStartMin,b:it.travelStartMin,bg:HATCH("244,194,13"),edge:"#e6cf6f",lab:"Prep",ink:"#7a6410"}); }
-        if (it.travelStartMin < it.eventStartMin){ segs.push({a:it.travelStartMin,b:it.eventStartMin,bg:HATCH("245,123,19"),edge:"#e0a066",lab:"Travel",ink:"#8a4a10"}); }
+        if (it.prepStartMin < it.travelStartMin){ segs.push({a:it.prepStartMin,b:it.travelStartMin,bg:HATCH("244,194,13"),edge:"#e6cf6f",lab:"Prep: "+it.title,ink:"#7a6410"}); }
+        if (it.travelStartMin < it.eventStartMin){ segs.push({a:it.travelStartMin,b:it.eventStartMin,bg:HATCH("245,123,19"),edge:"#e0a066",lab:"Travel: "+it.title,ink:"#8a4a10"}); }
         var evActive = (nowMin>=it.eventStartMin && nowMin<it.endMin);
         segs.push({a:it.eventStartMin,b:it.endMin,bg:"rgba(93,112,82,0.34)",edge:C.good,lab:it.title,ink:"#2f3d29",solid:true,active:evActive});
         segs.forEach(function(sg,si){
@@ -1050,7 +1061,7 @@ function App() {
     popupNode(),
     h("header",{style:{maxWidth:640,margin:"0",padding:"max(28px, env(safe-area-inset-top)) 24px 10px"}},
       h("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:8}},
-        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.3.2"),
+        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.3.3"),
         h("div",{style:{fontSize:12.5,color:C.sub,fontStyle:"italic"}}, "The important that is placed and the urgent that is done")
       ),
       h("div",{id:"status-bar",style:{color:(status.indexOf("Could not")===0||status.indexOf("failed")>-1)?"#a23":C.faint}}, status),
