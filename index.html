@@ -726,28 +726,38 @@ function App() {
     var fitted = schedule.railItems.filter(function(it){ return !it.unfitted && it.endMin > nowMin; });
     var unfittedItems = schedule.railItems.filter(function(it){ return it.unfitted; });
 
-    // canvas top = now; bottom = end of the last fitted thing (min 90 min of runway so it never collapses)
+    // canvas top = origin. Normally origin = now (now-bar pinned at top). EXCEPTION: when exactly
+    // ONE event is in progress, origin backs up to that event's start so the event you're inside
+    // shows in full, with the now-bar floating to its true position within it. Nothing older than
+    // that event's start is shown. Zero in-progress events, or MORE than one (ambiguous — deferred),
+    // fall back to origin = now. Tasks are never "in progress" for this purpose — events only.
+    var inProgressEvents = schedule.blocks.filter(function(b){ return b.inProgress; });
+    var originMin = nowMin;
+    if (inProgressEvents.length === 1){ originMin = inProgressEvents[0].s; }
+
+    // bottom = end of the last fitted thing (min 90 min of runway so it never collapses)
     var lastEnd = nowMin + 90;
     fitted.forEach(function(it){ if(it.endMin>lastEnd) lastEnd = it.endMin; });
-    var spanMin = Math.max(90, lastEnd - nowMin);
+    var spanMin = Math.max(90, lastEnd - originMin);
     var canvasH = spanMin * PX_PER_MIN;
-    var yOf = function(m){ return (m - nowMin) * PX_PER_MIN; };
+    var yOf = function(m){ return (m - originMin) * PX_PER_MIN; };
     var HATCH = function(rgb){ return "repeating-linear-gradient(45deg,"+
       "rgba("+rgb+",0.55) 0,rgba("+rgb+",0.55) 7px,rgba("+rgb+",0.14) 7px,rgba("+rgb+",0.14) 14px)"; };
 
     var canvasKids = [];
 
     // hour grid + labels
-    for (var hm = Math.ceil(nowMin/60)*60; hm <= lastEnd; hm += 60){
+    for (var hm = Math.ceil(originMin/60)*60; hm <= lastEnd; hm += 60){
       canvasKids.push(h("div",{key:"g"+hm,style:{position:"absolute",left:44,right:0,top:yOf(hm),
         borderTop:"1px solid "+C.line,pointerEvents:"none"}}));
       canvasKids.push(h("div",{key:"gl"+hm,style:{position:"absolute",left:0,width:40,top:yOf(hm)-7,
         textAlign:"right",fontSize:10,color:C.faint,fontVariantNumeric:"tabular-nums",pointerEvents:"none"}}, fmtMin(hm)));
     }
-    // now line
-    canvasKids.push(h("div",{key:"nowl",style:{position:"absolute",left:0,right:0,top:0,
+    // now line — floats to its true position (yOf(nowMin)); = top only when origin == now
+    var nowY = yOf(nowMin);
+    canvasKids.push(h("div",{key:"nowl",style:{position:"absolute",left:0,right:0,top:nowY,
       borderTop:"2px solid "+C.nowline,zIndex:4,pointerEvents:"none"}}));
-    canvasKids.push(h("div",{key:"nowll",style:{position:"absolute",left:0,width:40,top:-7,textAlign:"right",
+    canvasKids.push(h("div",{key:"nowll",style:{position:"absolute",left:0,width:40,top:nowY-7,textAlign:"right",
       fontSize:10,fontWeight:700,color:C.nowline,fontVariantNumeric:"tabular-nums",zIndex:4}}, fmtMin(nowMin)));
 
     // blocks
@@ -1061,7 +1071,7 @@ function App() {
     popupNode(),
     h("header",{style:{maxWidth:640,margin:"0",padding:"max(28px, env(safe-area-inset-top)) 24px 10px"}},
       h("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:8}},
-        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.3.3"),
+        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.3.4"),
         h("div",{style:{fontSize:12.5,color:C.sub,fontStyle:"italic"}}, "The important that is placed and the urgent that is done")
       ),
       h("div",{id:"status-bar",style:{color:(status.indexOf("Could not")===0||status.indexOf("failed")>-1)?"#a23":C.faint}}, status),
