@@ -753,6 +753,13 @@ function App() {
       canvasKids.push(h("div",{key:"gl"+hm,style:{position:"absolute",left:0,width:40,top:yOf(hm)-7,
         textAlign:"right",fontSize:10,color:C.faint,fontVariantNumeric:"tabular-nums",pointerEvents:"none"}}, fmtMin(hm)));
     }
+    // 15-minute tick marks — short left-axis marks at :15/:30/:45 (hours already have full lines).
+    // Lets the eye COUNT quarter-hour units an event spans instead of calculating from hour lines.
+    for (var qm = Math.ceil(originMin/15)*15; qm <= lastEnd; qm += 15){
+      if (qm % 60 === 0) continue; // hour marks already drawn as full lines
+      canvasKids.push(h("div",{key:"q"+qm,style:{position:"absolute",left:38,width:6,top:yOf(qm),
+        borderTop:"1px solid "+C.faint,opacity:.55,pointerEvents:"none"}}));
+    }
     // now line — floats to its true position (yOf(nowMin)); = top only when origin == now
     var nowY = yOf(nowMin);
     canvasKids.push(h("div",{key:"nowl",style:{position:"absolute",left:0,right:0,top:nowY,
@@ -1071,7 +1078,7 @@ function App() {
     popupNode(),
     h("header",{style:{maxWidth:640,margin:"0",padding:"max(28px, env(safe-area-inset-top)) 24px 10px"}},
       h("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:8}},
-        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.3.4"),
+        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.3.5"),
         h("div",{style:{fontSize:12.5,color:C.sub,fontStyle:"italic"}}, "The important that is placed and the urgent that is done")
       ),
       h("div",{id:"status-bar",style:{color:(status.indexOf("Could not")===0||status.indexOf("failed")>-1)?"#a23":C.faint}}, status),
