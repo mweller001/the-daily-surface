@@ -755,10 +755,10 @@ function App() {
         travRGB:"245,123,19", travEdge:"#e0a066",
         evBg:"#1CAC78", evEdge:"#158a60"
       },
-      her: { // Anastasia — fuchsia family: light-fuchsia prep → deep-fuchsia travel → solid fuchsia event
-        prepRGB:"224,120,180", prepEdge:"#e6a9cc",
-        travRGB:"212,90,158", travEdge:"#d488b4",
-        evBg:"#b2267a", evEdge:"#8e1c60"
+      her: { // Anastasia — fuchsia family: light-fuchsia prep → mid-fuchsia travel → #EC5F9A event
+        prepRGB:"245,150,190", prepEdge:"#f0a8c8",
+        travRGB:"238,110,168", travEdge:"#ee88b4",
+        evBg:"#EC5F9A", evEdge:"#c94a80"
       }
     };
     var HATCH_INK = "#000";   // hatch labels: pure black (hatching carries the signal)
@@ -1102,7 +1102,7 @@ function App() {
     popupNode(),
     h("header",{style:{maxWidth:640,margin:"0",padding:"max(28px, env(safe-area-inset-top)) 24px 10px"}},
       h("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:8}},
-        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.3.8"),
+        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.3.9"),
         h("div",{style:{fontSize:12.5,color:C.sub,fontStyle:"italic"}}, "The important that is placed and the urgent that is done")
       ),
       h("div",{id:"status-bar",style:{color:(status.indexOf("Could not")===0||status.indexOf("failed")>-1)?"#a23":C.faint}}, status),
