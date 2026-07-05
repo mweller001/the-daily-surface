@@ -1,3 +1,3 @@
 # intentional-life
 MIL26 - The Daily Surface 
-README.md
+v0.3.8
