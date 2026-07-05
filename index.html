@@ -205,11 +205,94 @@ var GCal = (function () {
 
   function isConnected() { return !!accessToken; }
 
+  // ---- WRITE OPERATIONS -------------------------------------------------------------------
+  // Guardrails: writes ONLY touch the curated calendars (Mark's primary + Anastasia's). The
+  // event id used in patches is the RAW Google id (the app's namespaced "g:cal:evId" is split).
+  // No delete (deletion stays in Google). No bulk ops — every write is one explicit event.
+  var PRIMARY_ID = "mweller001@gmail.com"; // create always targets Mark's calendar
+  var curatedIds = CALENDARS.map(function(c){ return c.id; });
+
+  // Split the app's namespaced id "g:<calId>:<eventId>" back into {calId, eventId}.
+  function splitId(appId){
+    var m = /^g:([^:]+@[^:]+):(.+)$/.exec(appId);
+    if(!m) return null;
+    return { calId: m[1], eventId: m[2] };
+  }
+  function guardCal(calId){ return curatedIds.indexOf(calId) !== -1; }
+
+  // PATCH just the app-owned prep/travel metadata on an event (extendedProperties.private).
+  // Lowest-risk write: annotates, does not touch the event's calendar data.
+  function patchPrepTravel(appId, prep, travel){
+    if(!accessToken) return Promise.reject(new Error("not connected"));
+    var s = splitId(appId); if(!s) return Promise.reject(new Error("bad event id"));
+    if(!guardCal(s.calId)) return Promise.reject(new Error("refusing write outside curated calendars"));
+    var url = "https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(s.calId)
+      + "/events/" + encodeURIComponent(s.eventId);
+    return fetch(url, { method:"PATCH", headers:{ "Authorization":"Bearer "+accessToken, "Content-Type":"application/json" },
+      body: JSON.stringify({ extendedProperties:{ private:{ dsPrep:String(prep), dsTravel:String(travel) } } }) })
+      .then(function(r){ if(!r.ok) throw new Error("patch prep/travel HTTP "+r.status); return r.json(); });
+  }
+
+  // PATCH an event's title and/or times (today's date, local). times are "HH:MM".
+  function patchEvent(appId, fields){
+    if(!accessToken) return Promise.reject(new Error("not connected"));
+    var s = splitId(appId); if(!s) return Promise.reject(new Error("bad event id"));
+    if(!guardCal(s.calId)) return Promise.reject(new Error("refusing write outside curated calendars"));
+    var body = {};
+    if(fields.title!=null) body.summary = fields.title;
+    if(fields.start) body.start = { dateTime: todayISO(fields.start), timeZone: localTZ() };
+    if(fields.end)   body.end   = { dateTime: todayISO(fields.end),   timeZone: localTZ() };
+    if(fields.prep!=null || fields.travel!=null){
+      body.extendedProperties = { private:{} };
+      if(fields.prep!=null)   body.extendedProperties.private.dsPrep = String(fields.prep);
+      if(fields.travel!=null) body.extendedProperties.private.dsTravel = String(fields.travel);
+    }
+    var url = "https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(s.calId)
+      + "/events/" + encodeURIComponent(s.eventId);
+    return fetch(url, { method:"PATCH", headers:{ "Authorization":"Bearer "+accessToken, "Content-Type":"application/json" },
+      body: JSON.stringify(body) })
+      .then(function(r){ if(!r.ok) throw new Error("patch event HTTP "+r.status); return r.json(); });
+  }
+
+  // CREATE a new timed event TODAY on Mark's primary calendar. times "HH:MM".
+  function createEvent(fields){
+    if(!accessToken) return Promise.reject(new Error("not connected"));
+    var body = {
+      summary: fields.title || "(untitled)",
+      start: { dateTime: todayISO(fields.start), timeZone: localTZ() },
+      end:   { dateTime: todayISO(fields.end),   timeZone: localTZ() },
+      extendedProperties: { private:{
+        dsPrep: String(fields.prep!=null?fields.prep:DEFAULT_PREP),
+        dsTravel: String(fields.travel!=null?fields.travel:DEFAULT_TRAVEL)
+      } }
+    };
+    var url = "https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(PRIMARY_ID) + "/events";
+    return fetch(url, { method:"POST", headers:{ "Authorization":"Bearer "+accessToken, "Content-Type":"application/json" },
+      body: JSON.stringify(body) })
+      .then(function(r){ if(!r.ok) throw new Error("create event HTTP "+r.status); return r.json(); });
+  }
+
+  // Build an RFC3339 local datetime for TODAY at "HH:MM".
+  function todayISO(hhmmStr){
+    var p = (hhmmStr||"09:00").split(":");
+    var n = new Date();
+    var d = new Date(n.getFullYear(), n.getMonth(), n.getDate(), parseInt(p[0],10)||0, parseInt(p[1],10)||0, 0);
+    // format as local RFC3339 with offset
+    function pad(x){ return x<10?"0"+x:""+x; }
+    var off = -d.getTimezoneOffset(); var sign = off>=0?"+":"-"; off=Math.abs(off);
+    return d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate())+"T"+pad(d.getHours())+":"+pad(d.getMinutes())+":00"
+      + sign + pad(Math.floor(off/60)) + ":" + pad(off%60);
+  }
+  function localTZ(){ try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "America/New_York"; } catch(e){ return "America/New_York"; } }
+
   return {
     init: init,
     connect: connect,
     isConnected: isConnected,
     fetchTodayEvents: fetchTodayEvents,
+    patchPrepTravel: patchPrepTravel,
+    patchEvent: patchEvent,
+    createEvent: createEvent,
     CALENDARS: CALENDARS
   };
 })();
@@ -437,6 +520,8 @@ function App() {
   var s_pop = useState(null), popup = s_pop[0], setPopup = s_pop[1]; // {id,x,y} or null
   // read-only event detail popup: which event and where.
   var s_evpop = useState(null), evPopup = s_evpop[0], setEvPopup = s_evpop[1]; // {id,x,y} or null
+  // event edit/create form: {mode:"edit"|"create", id?, title,start,end,prep,travel, saving, err} or null
+  var s_evform = useState(null), evForm = s_evform[0], setEvForm = s_evform[1];
   // full edit modal: task id being edited, or null. Confirm-delete flag within it.
   var s_editId = useState(null), editId = s_editId[0], setEditId = s_editId[1];
   var s_confirmDel = useState(false), confirmDel = s_confirmDel[0], setConfirmDel = s_confirmDel[1];
@@ -501,6 +586,46 @@ function App() {
       setCalMsg(res.timed.length + " event" + (res.timed.length===1?"":"s") + " today");
     }).catch(function(e){ setCalMsg(e.message||String(e)); });
   }, []);
+
+  // Open the edit form for an existing event (from its detail popup).
+  var openEventEdit = useCallback(function(appId){
+    var ev = appts.filter(function(x){return x.id===appId;})[0];
+    if(!ev) return;
+    setEvPopup(null);
+    setEvForm({ mode:"edit", id:appId, title:ev.title, start:ev.start, end:ev.end,
+      prep:(ev.prep!=null?ev.prep:15), travel:(ev.travel!=null?ev.travel:30), owner:ev.owner, saving:false, err:"" });
+  }, [appts]);
+
+  // Open the create form (blank, times default, on Mark's calendar).
+  var openEventCreate = useCallback(function(){
+    setEvForm({ mode:"create", title:"", start:"09:00", end:"10:00", prep:15, travel:30, saving:false, err:"" });
+  }, []);
+
+  var closeEventForm = useCallback(function(){ setEvForm(null); }, []);
+
+  // Save the form — PATCH (edit) or POST (create) to Google, then refresh the surface.
+  var saveEventForm = useCallback(function(){
+    setEvForm(function(f){ return Object.assign({}, f, { saving:true, err:"" }); });
+    var f = evFormRef.current;
+    if(!f) return;
+    var p;
+    if(f.mode==="edit"){
+      p = GCal.patchEvent(f.id, { title:f.title, start:f.start, end:f.end, prep:parseInt(f.prep,10), travel:parseInt(f.travel,10) });
+    } else {
+      p = GCal.createEvent({ title:f.title, start:f.start, end:f.end, prep:parseInt(f.prep,10), travel:parseInt(f.travel,10) });
+    }
+    p.then(function(){
+      return GCal.fetchTodayEvents();
+    }).then(function(res){
+      setAppts(res.timed); setAllDayFlags(res.allDay);
+      setEvForm(null);
+    }).catch(function(e){
+      setEvForm(function(ff){ return ff ? Object.assign({}, ff, { saving:false, err:(e.message||String(e)) }) : null; });
+    });
+  }, []);
+  // ref mirror so saveEventForm reads the latest field values
+  var evFormRef = React.useRef(null);
+  evFormRef.current = evForm;
 
   // PROMPT FIRING ENGINE (client-only, Rung 1). Runs each tick (via nowMin dep).
   // For each task with a prompt firing today, derive Begin (fireAt) and Transition
@@ -1120,6 +1245,47 @@ function App() {
       processStepBare("3","Priorities \u2014 verify what I will be glad of tonight is appropriately placed.",null)
     );
   }
+  function eventFormNode(){
+    if(!evForm) return null;
+    var isEdit = evForm.mode==="edit";
+    function upd(k, v){ setEvForm(function(f){ return Object.assign({}, f, {}, (function(){var o={};o[k]=v;return o;})()); }); }
+    var lbl = function(t){ return h("div",{style:{fontSize:11,fontWeight:600,color:C.faint,textTransform:"uppercase",letterSpacing:.4,marginBottom:3}}, t); };
+    var inputStyle = {width:"100%",boxSizing:"border-box",border:"1px solid "+C.panelEdge,borderRadius:6,padding:"9px 11px",fontSize:15,color:C.ink,background:C.paper};
+    var field = function(key, label, node){ return h("div",{key:key,style:{marginBottom:12}}, lbl(label), node); };
+    var body = [
+      h("div",{key:"hd",style:{fontFamily:"Georgia, serif",fontSize:18,fontWeight:600,color:C.ink,marginBottom:14}},
+        isEdit ? "Edit event" : "New event — today, your calendar"),
+      field("title","Title", h("input",{type:"text",value:evForm.title,placeholder:"Event title",
+        onChange:function(e){ upd("title", e.target.value); }, style:inputStyle})),
+      h("div",{key:"times",style:{display:"flex",gap:10,marginBottom:12}},
+        h("div",{style:{flex:1}}, lbl("Start"), h("input",{type:"time",value:evForm.start,
+          onChange:function(e){ upd("start", e.target.value); }, style:inputStyle})),
+        h("div",{style:{flex:1}}, lbl("End"), h("input",{type:"time",value:evForm.end,
+          onChange:function(e){ upd("end", e.target.value); }, style:inputStyle}))
+      ),
+      h("div",{key:"buf",style:{display:"flex",gap:10,marginBottom:4}},
+        h("div",{style:{flex:1}}, lbl("Prep (min)"), h("input",{type:"number",min:0,step:5,value:evForm.prep,
+          onChange:function(e){ upd("prep", e.target.value); }, style:inputStyle})),
+        h("div",{style:{flex:1}}, lbl("Travel (min)"), h("input",{type:"number",min:0,step:5,value:evForm.travel,
+          onChange:function(e){ upd("travel", e.target.value); }, style:inputStyle}))
+      ),
+      evForm.err ? h("div",{key:"err",style:{color:"#a23",fontSize:12.5,marginTop:8}}, evForm.err) : null,
+      h("div",{key:"acts",style:{display:"flex",gap:10,marginTop:18}},
+        h("button",{onClick:closeEventForm,disabled:evForm.saving,
+          style:{flex:1,border:"1px solid "+C.panelEdge,background:C.paper,color:C.ink,borderRadius:6,padding:"11px 0",fontSize:14,fontWeight:600,cursor:"pointer"}}, "Cancel"),
+        h("button",{onClick:saveEventForm,disabled:evForm.saving,
+          style:{flex:1,border:"none",background:evForm.saving?C.faint:C.good,color:"#fff",borderRadius:6,padding:"11px 0",fontSize:14,fontWeight:700,cursor:evForm.saving?"default":"pointer"}},
+          evForm.saving ? "Saving…" : (isEdit?"Save changes":"Create event"))
+      )
+    ];
+    return h("div",{key:"evformbd",onPointerDown:function(e){ if(!evForm.saving) closeEventForm(); },
+        style:{position:"fixed",inset:0,zIndex:70,background:"rgba(28,31,38,0.45)",display:"flex",alignItems:"center",justifyContent:"center",padding:"24px"}},
+      h("div",{onPointerDown:function(e){e.stopPropagation();},
+        style:{width:"100%",maxWidth:380,background:C.panel,border:"1px solid "+C.panelEdge,borderRadius:12,padding:"20px 22px",boxShadow:"0 12px 40px rgba(28,31,38,0.28)"}},
+        body)
+    );
+  }
+
   function eventPopupNode(){
     if(!evPopup) return null;
     var ev = appts.filter(function(x){return x.id===evPopup.id;})[0];
@@ -1141,6 +1307,9 @@ function App() {
       "Prep "+ (ev.prep!=null?ev.prep:0) +"m · Travel "+ (ev.travel!=null?ev.travel:0) +"m"));
     if(ev.location){ rows.push(h("div",{key:"loc",style:{fontSize:12.5,color:C.sub,marginTop:6}}, "📍 "+ev.location)); }
     if(ev.description){ rows.push(h("div",{key:"desc",style:{fontSize:12.5,color:C.sub,marginTop:6,whiteSpace:"pre-wrap",maxHeight:120,overflow:"auto"}}, ev.description)); }
+    rows.push(h("button",{key:"editbtn",onClick:function(e){ e.stopPropagation(); openEventEdit(ev.id); },
+      style:{marginTop:10,border:"1px solid "+C.panelEdge,background:C.paper,borderRadius:5,padding:"7px 13px",
+        fontSize:13,fontWeight:600,color:C.ink,cursor:"pointer",width:"100%"}}, "Edit event"));
     function bd(e){ if(swallowNextBackdrop.current){ swallowNextBackdrop.current=false; return; } setEvPopup(null); }
     return h("div",{key:"evbackdrop",onPointerDown:bd,onContextMenu:function(e){e.preventDefault();bd(e);},
         style:{position:"fixed",inset:0,zIndex:50,background:"rgba(28,31,38,0.04)"}},
@@ -1249,9 +1418,10 @@ function App() {
     editModalNode(),
     popupNode(),
     eventPopupNode(),
+    eventFormNode(),
     h("header",{style:{maxWidth:640,margin:"0",padding:"max(28px, env(safe-area-inset-top)) 24px 10px"}},
       h("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:8}},
-        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.4.3"),
+        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.4.4"),
         h("div",{style:{fontSize:12.5,color:C.sub,fontStyle:"italic"}}, "The important that is placed and the urgent that is done")
       ),
       h("div",{id:"status-bar",style:{color:(status.indexOf("Could not")===0||status.indexOf("failed")>-1)?"#a23":C.faint}}, status),
@@ -1260,6 +1430,9 @@ function App() {
         (calState==="connected")
           ? h("button",{onClick:refreshCalendar,style:{border:"1px solid "+C.panelEdge,background:"transparent",color:C.sub,borderRadius:5,padding:"5px 11px",fontSize:12,fontWeight:600,cursor:"pointer"}}, "\u21bb Calendar")
           : h("button",{onClick:connectCalendar,disabled:calState==="connecting",style:{border:"none",background:calState==="connecting"?C.faint:C.good,color:"#fff",borderRadius:5,padding:"6px 13px",fontSize:12,fontWeight:600,cursor:calState==="connecting"?"default":"pointer"}}, calState==="connecting"?"Connecting\u2026":"Connect Calendar"),
+        (calState==="connected")
+          ? h("button",{onClick:openEventCreate,style:{border:"1px solid "+C.good,background:"transparent",color:C.good,borderRadius:5,padding:"5px 11px",fontSize:12,fontWeight:700,cursor:"pointer"}}, "+ Event")
+          : null,
         calMsg ? h("span",{style:{fontSize:11.5,color:calState==="error"?"#a23":C.faint}}, calMsg) : null
       ),
       h("div",{style:{height:1,background:C.panelEdge}})
