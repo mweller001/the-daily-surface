@@ -744,6 +744,23 @@ function App() {
     var HATCH = function(rgb){ return "repeating-linear-gradient(45deg,"+
       "rgba("+rgb+",0.55) 0,rgba("+rgb+",0.55) 7px,rgba("+rgb+",0.14) 7px,rgba("+rgb+",0.14) 14px)"; };
 
+    // OWNER → COLOR PALETTE. Source-calendar owner ("me"/"her") drives the reserved-block colors.
+    // (Single named developer-constant, per the source-calendar→visual-treatment rule. Easy to retune;
+    // not a user setting. Each owner gets a coherent family across prep → travel → event.)
+    var OWNER_PALETTE = {
+      me: {  // Mark — warm family: yellow prep → orange travel → green event (unchanged)
+        prepRGB:"244,194,13", prepEdge:"#e6cf6f", prepInk:"#7a6410",
+        travRGB:"245,123,19", travEdge:"#e0a066", travInk:"#8a4a10",
+        evBg:"rgba(93,112,82,0.34)", evEdge:C.good, evInk:"#2f3d29"
+      },
+      her: { // Anastasia — fuchsia family: light-fuchsia prep → deep-fuchsia travel → solid fuchsia event
+        prepRGB:"214,72,154", prepEdge:"#e29ac4", prepInk:"#8a2b62",
+        travRGB:"178,38,120", travEdge:"#c86aa2", travInk:"#7a1a52",
+        evBg:"rgba(178,38,120,0.30)", evEdge:"#b2267a", evInk:"#6e1550"
+      }
+    };
+    var paletteFor = function(owner){ return OWNER_PALETTE[owner] || OWNER_PALETTE.me; };
+
     var canvasKids = [];
 
     // hour grid + labels
@@ -776,10 +793,11 @@ function App() {
         // In-progress events have prepStart==travelStart==eventStart, so the two hatch segments
         // are naturally skipped by the < checks — only the live event renders.
         var segs = [];
-        if (it.prepStartMin < it.travelStartMin){ segs.push({a:it.prepStartMin,b:it.travelStartMin,bg:HATCH("244,194,13"),edge:"#e6cf6f",lab:"Prep: "+it.title,ink:"#7a6410"}); }
-        if (it.travelStartMin < it.eventStartMin){ segs.push({a:it.travelStartMin,b:it.eventStartMin,bg:HATCH("245,123,19"),edge:"#e0a066",lab:"Travel: "+it.title,ink:"#8a4a10"}); }
+        var pal = paletteFor(it.owner);
+        if (it.prepStartMin < it.travelStartMin){ segs.push({a:it.prepStartMin,b:it.travelStartMin,bg:HATCH(pal.prepRGB),edge:pal.prepEdge,lab:"Prep: "+it.title,ink:pal.prepInk}); }
+        if (it.travelStartMin < it.eventStartMin){ segs.push({a:it.travelStartMin,b:it.eventStartMin,bg:HATCH(pal.travRGB),edge:pal.travEdge,lab:"Travel: "+it.title,ink:pal.travInk}); }
         var evActive = (nowMin>=it.eventStartMin && nowMin<it.endMin);
-        segs.push({a:it.eventStartMin,b:it.endMin,bg:"rgba(93,112,82,0.34)",edge:C.good,lab:it.title,ink:"#2f3d29",solid:true,active:evActive});
+        segs.push({a:it.eventStartMin,b:it.endMin,bg:pal.evBg,edge:pal.evEdge,lab:it.title,ink:pal.evInk,solid:true,active:evActive});
         segs.forEach(function(sg,si){
           var segTop = Math.max(0,yOf(sg.a)), segH = Math.max(13,(sg.b-sg.a)*PX_PER_MIN-1);
           canvasKids.push(
@@ -1078,7 +1096,7 @@ function App() {
     popupNode(),
     h("header",{style:{maxWidth:640,margin:"0",padding:"max(28px, env(safe-area-inset-top)) 24px 10px"}},
       h("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:8}},
-        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.3.5"),
+        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.3.6"),
         h("div",{style:{fontSize:12.5,color:C.sub,fontStyle:"italic"}}, "The important that is placed and the urgent that is done")
       ),
       h("div",{id:"status-bar",style:{color:(status.indexOf("Could not")===0||status.indexOf("failed")>-1)?"#a23":C.faint}}, status),
