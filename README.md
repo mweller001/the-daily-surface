@@ -1,2 +1,2 @@
 # intentional-life
-MIL26
+MIL26 - The Daily Surface
