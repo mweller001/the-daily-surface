@@ -86,7 +86,7 @@ var GCal = (function () {
   var DEFAULT_TRAVEL = 30;
 
   function mapEvent(ev, cal) {
-    if (!ev.start || !ev.start.dateTime || !ev.end || !ev.end.dateTime) return null; // all-day / date-only → skip for now
+    if (!ev.start || !ev.start.dateTime || !ev.end || !ev.end.dateTime) return null; // all-day handled separately
     // prep/travel live in the event's private extendedProperties (proven in the write test).
     // Absent → the app's default estimate (15/30), so the day-estimate stays realistic.
     var xp = (ev.extendedProperties && ev.extendedProperties.private) || {};
@@ -107,7 +107,20 @@ var GCal = (function () {
     };
   }
 
-  // Fetch today's timed events from one calendar → array of appt-shaped objects.
+  // All-day events have start.date (no dateTime). They're day-level FLAGS (e.g. "MOFF"), not
+  // timed blocks — rendered as chips in a band above the canvas, not on the timeline.
+  function mapAllDay(ev, cal) {
+    if (!ev.start || ev.start.dateTime || !ev.start.date) return null; // only date-only events
+    return {
+      id: "gA:" + cal.id + ":" + ev.id,
+      title: ev.summary || "(all day)",
+      owner: cal.owner,
+      calendarId: cal.id,
+      description: ev.description || ""
+    };
+  }
+
+  // Fetch today's events from one calendar → { timed:[...], allDay:[...] }.
   function fetchCalendar(cal, bounds) {
     var url = "https://www.googleapis.com/calendar/v3/calendars/"
       + encodeURIComponent(cal.id) + "/events"
@@ -120,19 +133,24 @@ var GCal = (function () {
         return r.json();
       })
       .then(function (data) {
-        return (data.items || [])
-          .map(function (ev) { return mapEvent(ev, cal); })
-          .filter(function (x) { return x !== null; });
+        var items = data.items || [];
+        return {
+          timed: items.map(function (ev) { return mapEvent(ev, cal); }).filter(function (x) { return x !== null; }),
+          allDay: items.map(function (ev) { return mapAllDay(ev, cal); }).filter(function (x) { return x !== null; })
+        };
       });
   }
 
-  // Fetch all curated calendars' today events, flattened.
+  // Fetch all curated calendars → { timed:[...], allDay:[...] } flattened across calendars.
   function fetchTodayEvents() {
     if (!accessToken) return Promise.reject(new Error("not connected"));
     var bounds = todayBounds();
     return Promise.all(CALENDARS.map(function (cal) { return fetchCalendar(cal, bounds); }))
-      .then(function (lists) {
-        return lists.reduce(function (acc, l) { return acc.concat(l); }, []);
+      .then(function (results) {
+        return {
+          timed:  results.reduce(function (acc, r) { return acc.concat(r.timed); }, []),
+          allDay: results.reduce(function (acc, r) { return acc.concat(r.allDay); }, [])
+        };
       });
   }
 
@@ -397,6 +415,7 @@ function App() {
   // calendar connection: "idle" | "connecting" | "connected" | "error"
   var s_cal = useState("idle"), calState = s_cal[0], setCalState = s_cal[1];
   var s_calMsg = useState(""), calMsg = s_calMsg[0], setCalMsg = s_calMsg[1];
+  var s_allday = useState([]), allDayFlags = s_allday[0], setAllDayFlags = s_allday[1];
   var s_hist = useState(false), historyOpen = s_hist[0], setHistoryOpen = s_hist[1];
   var s_now = useState(nowMinutes()), nowMin = s_now[0], setNowMin = s_now[1];
   // v0.2 contextual popup: which task and where on screen.
@@ -444,10 +463,11 @@ function App() {
     setCalState("connecting"); setCalMsg("");
     GCal.connect().then(function(){
       return GCal.fetchTodayEvents();
-    }).then(function(events){
-      setAppts(events);
+    }).then(function(res){
+      setAppts(res.timed);
+      setAllDayFlags(res.allDay);
       setCalState("connected");
-      setCalMsg(events.length + " event" + (events.length===1?"":"s") + " today");
+      setCalMsg(res.timed.length + " event" + (res.timed.length===1?"":"s") + " today");
     }).catch(function(e){
       setCalState("error");
       setCalMsg(e.message||String(e));
@@ -458,9 +478,10 @@ function App() {
   var refreshCalendar = useCallback(function(){
     if (!GCal.isConnected()) return;
     setCalMsg("refreshing…");
-    GCal.fetchTodayEvents().then(function(events){
-      setAppts(events);
-      setCalMsg(events.length + " event" + (events.length===1?"":"s") + " today");
+    GCal.fetchTodayEvents().then(function(res){
+      setAppts(res.timed);
+      setAllDayFlags(res.allDay);
+      setCalMsg(res.timed.length + " event" + (res.timed.length===1?"":"s") + " today");
     }).catch(function(e){ setCalMsg(e.message||String(e)); });
   }, []);
 
@@ -892,7 +913,27 @@ function App() {
     var railWrap = h("div",{key:"rail",style:{border:"1px solid "+C.line,borderRadius:4,padding:"12px 10px 14px 12px",
       background:"rgba(255,255,255,0.4)",overflow:"hidden"}}, canvas);
 
-    var children = [ railWrap ];
+    var children = [];
+
+    // ALL-DAY FLAG BAND — day-level flags (e.g. MOFF), rendered as chips above the timeline,
+    // NOT on it (they have no start/end). Colored by owner. Nothing renders if none today.
+    if (allDayFlags && allDayFlags.length){
+      var flagChips = allDayFlags.map(function(f,fi){
+        var isHer = f.owner==="her";
+        var chipBg = isHer ? "#EC5F9A" : "#1CAC78";
+        var chipEdge = isHer ? "#c94a80" : "#158a60";
+        return h("div",{key:f.id||("flag"+fi),title:f.title,style:{display:"inline-flex",alignItems:"center",gap:5,
+          background:chipBg,border:"1px solid "+chipEdge,color:"#fff",borderRadius:5,padding:"3px 9px",
+          fontSize:11.5,fontWeight:600,textShadow:"0 1px 1px rgba(0,0,0,0.2)",maxWidth:180,
+          whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}},
+          h("span",{style:{fontSize:9,opacity:0.85,textTransform:"uppercase",letterSpacing:0.4}}, isHer?"A":"M"),
+          f.title);
+      });
+      children.push(h("div",{key:"flagband",style:{display:"flex",flexWrap:"wrap",gap:6,marginBottom:8,
+        paddingBottom:8,borderBottom:"1px solid "+C.panelEdge}}, flagChips));
+    }
+
+    children.push(railWrap);
 
     // overflow (past-horizon) tasks — listed in flow below the canvas, dashed, priority-colored
     if (unfittedItems.length){
@@ -1153,7 +1194,7 @@ function App() {
     popupNode(),
     h("header",{style:{maxWidth:640,margin:"0",padding:"max(28px, env(safe-area-inset-top)) 24px 10px"}},
       h("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:8}},
-        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.4.0"),
+        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.4.1"),
         h("div",{style:{fontSize:12.5,color:C.sub,fontStyle:"italic"}}, "The important that is placed and the urgent that is done")
       ),
       h("div",{id:"status-bar",style:{color:(status.indexOf("Could not")===0||status.indexOf("failed")>-1)?"#a23":C.faint}}, status),
