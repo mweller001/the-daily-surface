@@ -107,10 +107,25 @@ var GCal = (function () {
     };
   }
 
+  // Local YYYY-MM-DD for today (for all-day date-range comparison).
+  function todayDateStr() {
+    var n = new Date();
+    var mm = n.getMonth()+1, dd = n.getDate();
+    return n.getFullYear() + "-" + (mm<10?"0"+mm:mm) + "-" + (dd<10?"0"+dd:dd);
+  }
+
   // All-day events have start.date (no dateTime). They're day-level FLAGS (e.g. "MOFF"), not
   // timed blocks — rendered as chips in a band above the canvas, not on the timeline.
+  // Google's all-day end.date is EXCLUSIVE (the day AFTER the last covered day), so an event
+  // that ends ON the 4th has end.date = the 5th. The API query for today therefore returns
+  // 4th-ending events whose exclusive end touches today. Belongs-to-today test: start.date <= today
+  // AND today < end.date. Without the end check, a 4th-ending event wrongly shows on the 5th.
   function mapAllDay(ev, cal) {
     if (!ev.start || ev.start.dateTime || !ev.start.date) return null; // only date-only events
+    var today = todayDateStr();
+    var startD = ev.start.date;                                   // inclusive
+    var endD = (ev.end && ev.end.date) ? ev.end.date : startD;    // EXCLUSIVE (day after last covered)
+    if (!(startD <= today && today < endD)) return null;          // today must be within [start, end)
     return {
       id: "gA:" + cal.id + ":" + ev.id,
       title: ev.summary || "(all day)",
@@ -1194,7 +1209,7 @@ function App() {
     popupNode(),
     h("header",{style:{maxWidth:640,margin:"0",padding:"max(28px, env(safe-area-inset-top)) 24px 10px"}},
       h("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:8}},
-        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.4.1"),
+        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.4.2"),
         h("div",{style:{fontSize:12.5,color:C.sub,fontStyle:"italic"}}, "The important that is placed and the urgent that is done")
       ),
       h("div",{id:"status-bar",style:{color:(status.indexOf("Could not")===0||status.indexOf("failed")>-1)?"#a23":C.faint}}, status),
