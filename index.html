@@ -435,6 +435,8 @@ function App() {
   var s_now = useState(nowMinutes()), nowMin = s_now[0], setNowMin = s_now[1];
   // v0.2 contextual popup: which task and where on screen.
   var s_pop = useState(null), popup = s_pop[0], setPopup = s_pop[1]; // {id,x,y} or null
+  // read-only event detail popup: which event and where.
+  var s_evpop = useState(null), evPopup = s_evpop[0], setEvPopup = s_evpop[1]; // {id,x,y} or null
   // full edit modal: task id being edited, or null. Confirm-delete flag within it.
   var s_editId = useState(null), editId = s_editId[0], setEditId = s_editId[1];
   var s_confirmDel = useState(false), confirmDel = s_confirmDel[0], setConfirmDel = s_confirmDel[1];
@@ -708,21 +710,26 @@ function App() {
   // Pointer-events long-press (no 300ms synthetic-click ghost) + right-click on desktop.
   var pressTimer = React.useRef(null);
   var pressOrigin = React.useRef(null);  // {x,y,pointerId} of the in-flight press
-  var openGuardUntil = React.useRef(0);  // backdrop ignores closes until this timestamp
+  // Gesture-scoped open guard: when a popup opens, the SAME gesture's release (pointerup) must not
+  // be read by the backdrop as a dismiss. A wall-clock timer guard was too short to survive the
+  // slower FIRST render (the opening release slipped past it, closing the popup the first time only,
+  // then working on warmer renders). Instead we arm a flag that swallows exactly one backdrop
+  // pointer event — the opening gesture's tail — regardless of render timing.
+  var swallowNextBackdrop = React.useRef(false);
   var MOVE_SLOP = 10;                     // px of finger drift tolerated before it's a scroll
 
   function clearPress(){
     if(pressTimer.current){ clearTimeout(pressTimer.current); pressTimer.current=null; }
     pressOrigin.current = null;
   }
-  function pressHandlers(task){
+  function pressHandlers(item, kind){
     function openAt(clientX, clientY){
-      openGuardUntil.current = Date.now() + 120; // swallow the tail of this same gesture
-      setPopup({ id:task.id, x:clientX, y:clientY });
+      swallowNextBackdrop.current = true; // the release ending THIS press must not dismiss
+      if(kind==="event"){ setEvPopup({ id:item.id, x:clientX, y:clientY }); }
+      else { setPopup({ id:item.id, x:clientX, y:clientY }); }
     }
     return {
       onPointerDown:function(e){
-        // primary button / touch / pen only; ignore right-button (that's contextmenu's job)
         if(e.button && e.button!==0) return;
         var x=e.clientX, y=e.clientY, pid=e.pointerId;
         pressOrigin.current = { x:x, y:y, pointerId:pid };
@@ -741,6 +748,8 @@ function App() {
       onContextMenu:function(e){ e.preventDefault(); openAt(e.clientX, e.clientY); }
     };
   }
+  // Single TAP opens the read-only event detail popup (handler inlined on each event segment).
+
 
   if (loading) {
     return h("div", { style:{maxWidth:1180, margin:"0 auto", padding:"40px 24px", color:C.sub} }, "Loading your day…");
@@ -892,9 +901,10 @@ function App() {
         segs.forEach(function(sg,si){
           var segTop = Math.max(0,yOf(sg.a)), segH = Math.max(13,(sg.b-sg.a)*PX_PER_MIN-1);
           canvasKids.push(
-            h("div",{key:(it.id||"a"+i)+"-"+si,style:{position:"absolute",left:colLeftCss,width:colWidthCss,top:segTop,height:segH,
+            h("div",Object.assign({key:(it.id||"a"+i)+"-"+si,onClick:function(e){ e.stopPropagation(); swallowNextBackdrop.current=true; setEvPopup({ id:it.id, x:e.clientX, y:e.clientY }); },
+              style:{position:"absolute",left:colLeftCss,width:colWidthCss,top:segTop,height:segH,cursor:"pointer",
               background:sg.bg,border:"1px solid "+sg.edge,borderRadius:5,padding:"2px 8px",overflow:"hidden",boxSizing:"border-box",
-              outline:sg.active?("2px solid "+C.amber):"none"}},
+              outline:sg.active?("2px solid "+C.amber):"none"}}),
               h("div",{style:{fontSize:10,letterSpacing:.4,textTransform:"uppercase",color:sg.ink,fontWeight:700,
                 textShadow:sg.solid?"0 1px 1px rgba(0,0,0,0.25)":"none"}},
                 sg.solid ? (sg.active?"Now · ":"")+"" : sg.lab),
@@ -1110,6 +1120,37 @@ function App() {
       processStepBare("3","Priorities \u2014 verify what I will be glad of tonight is appropriately placed.",null)
     );
   }
+  function eventPopupNode(){
+    if(!evPopup) return null;
+    var ev = appts.filter(function(x){return x.id===evPopup.id;})[0];
+    if(!ev) return null;
+    var vw = (typeof window!=="undefined") ? window.innerWidth : 380;
+    var vh = (typeof window!=="undefined") ? window.innerHeight : 700;
+    var W = 280;
+    var x = Math.min(evPopup.x, vw - W - 10); if(x<10) x=10;
+    var y = Math.min(evPopup.y, vh - 200); if(y<10) y=10;
+    var ownerName = ev.owner==="her" ? "Anastasia" : "Mark";
+    var ownerColor = ev.owner==="her" ? "#EC5F9A" : "#1CAC78";
+    var rows = [];
+    rows.push(h("div",{key:"t",style:{fontSize:15,fontWeight:700,color:C.ink,marginBottom:4,lineHeight:1.25}}, ev.title));
+    rows.push(h("div",{key:"tm",style:{fontSize:13,color:C.sub,fontVariantNumeric:"tabular-nums"}}, ev.start+"–"+ev.end));
+    rows.push(h("div",{key:"ow",style:{display:"flex",alignItems:"center",gap:6,fontSize:12.5,color:C.sub,marginTop:6}},
+      h("span",{style:{width:9,height:9,borderRadius:2,background:ownerColor,display:"inline-block"}}), ownerName+"'s calendar"));
+    // prep/travel (the app's estimate or the event's set values)
+    rows.push(h("div",{key:"pt",style:{fontSize:12,color:C.faint,marginTop:2}},
+      "Prep "+ (ev.prep!=null?ev.prep:0) +"m · Travel "+ (ev.travel!=null?ev.travel:0) +"m"));
+    if(ev.location){ rows.push(h("div",{key:"loc",style:{fontSize:12.5,color:C.sub,marginTop:6}}, "📍 "+ev.location)); }
+    if(ev.description){ rows.push(h("div",{key:"desc",style:{fontSize:12.5,color:C.sub,marginTop:6,whiteSpace:"pre-wrap",maxHeight:120,overflow:"auto"}}, ev.description)); }
+    function bd(e){ if(swallowNextBackdrop.current){ swallowNextBackdrop.current=false; return; } setEvPopup(null); }
+    return h("div",{key:"evbackdrop",onPointerDown:bd,onContextMenu:function(e){e.preventDefault();bd(e);},
+        style:{position:"fixed",inset:0,zIndex:50,background:"rgba(28,31,38,0.04)"}},
+      h("div",{onPointerDown:function(e){e.stopPropagation();},
+        style:{position:"fixed",left:x,top:y,zIndex:51,width:W,background:C.panel,border:"1px solid "+C.panelEdge,
+          borderRadius:8,padding:"12px 14px",boxShadow:"0 8px 28px rgba(28,31,38,0.18)"}},
+        rows)
+    );
+  }
+
   function popupNode(){
     if(!popup) return null;
     var task = tasks.filter(function(x){return x.id===popup.id;})[0];
@@ -1131,7 +1172,7 @@ function App() {
       )
     ];
     function backdropClose(e){
-      if(Date.now() < openGuardUntil.current) return; // ignore the opening gesture's own tail
+      if(swallowNextBackdrop.current){ swallowNextBackdrop.current=false; return; } // opening gesture's own tail
       closePopup();
     }
     return h("div",{key:"backdrop",onPointerDown:backdropClose,onContextMenu:function(e){e.preventDefault();backdropClose(e);},
@@ -1207,9 +1248,10 @@ function App() {
     firePromptNode(),
     editModalNode(),
     popupNode(),
+    eventPopupNode(),
     h("header",{style:{maxWidth:640,margin:"0",padding:"max(28px, env(safe-area-inset-top)) 24px 10px"}},
       h("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:8}},
-        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.4.2"),
+        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.4.3"),
         h("div",{style:{fontSize:12.5,color:C.sub,fontStyle:"italic"}}, "The important that is placed and the urgent that is done")
       ),
       h("div",{id:"status-bar",style:{color:(status.indexOf("Could not")===0||status.indexOf("failed")>-1)?"#a23":C.faint}}, status),
