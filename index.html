@@ -77,14 +77,21 @@ var GCal = (function () {
   // Map one Google event (from a given curated calendar) to the app appt shape.
   // Skips all-day events (no dateTime, only date) — the canvas is a timed surface;
   // all-day handling is a later increment. Returns null to skip.
+  // Default prep/travel (minutes) assumed when a Google event carries no explicit values.
+  // Google Calendar has no prep/travel fields, so absent = "not specified", NOT "zero" — a
+  // zero-buffer render would make the day look falsely empty and defeat accurate day-estimation.
+  // These are the app's honest real-world estimate until an event is edited to set actual values.
+  // (Developer constants, easily changed. Not a user setting.)
+  var DEFAULT_PREP = 15;
+  var DEFAULT_TRAVEL = 30;
+
   function mapEvent(ev, cal) {
     if (!ev.start || !ev.start.dateTime || !ev.end || !ev.end.dateTime) return null; // all-day / date-only → skip for now
     // prep/travel live in the event's private extendedProperties (proven in the write test).
-    // Absent → 0, which the canvas renders as no reserved prep/travel segment. Reading them here
-    // is shape-completion for v0.2.15's reserved-block math, not a new feature surface.
+    // Absent → the app's default estimate (15/30), so the day-estimate stays realistic.
     var xp = (ev.extendedProperties && ev.extendedProperties.private) || {};
-    var prep = parseInt(xp.dsPrep, 10); if (isNaN(prep)) prep = 0;
-    var travel = parseInt(xp.dsTravel, 10); if (isNaN(travel)) travel = 0;
+    var prep = parseInt(xp.dsPrep, 10); if (isNaN(prep)) prep = DEFAULT_PREP;
+    var travel = parseInt(xp.dsTravel, 10); if (isNaN(travel)) travel = DEFAULT_TRAVEL;
     return {
       id: "g:" + cal.id + ":" + ev.id,     // namespaced so it can't collide with Supabase ids
       title: ev.summary || "(busy)",
@@ -1043,7 +1050,7 @@ function App() {
     popupNode(),
     h("header",{style:{maxWidth:640,margin:"0",padding:"max(28px, env(safe-area-inset-top)) 24px 10px"}},
       h("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:8}},
-        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.3.1"),
+        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.3.2"),
         h("div",{style:{fontSize:12.5,color:C.sub,fontStyle:"italic"}}, "The important that is placed and the urgent that is done")
       ),
       h("div",{id:"status-bar",style:{color:(status.indexOf("Could not")===0||status.indexOf("failed")>-1)?"#a23":C.faint}}, status),
