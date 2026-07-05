@@ -745,20 +745,24 @@ function App() {
       "rgba("+rgb+",0.55) 0,rgba("+rgb+",0.55) 7px,rgba("+rgb+",0.14) 7px,rgba("+rgb+",0.14) 14px)"; };
 
     // OWNER → COLOR PALETTE. Source-calendar owner ("me"/"her") drives the reserved-block colors.
-    // (Single named developer-constant, per the source-calendar→visual-treatment rule. Easy to retune;
-    // not a user setting. Each owner gets a coherent family across prep → travel → event.)
+    // Signaling principle: one channel per signal. Hatching signals prep-vs-travel, so hatch TEXT is
+    // pure black (no tinted ink competing as a second weak signal). Event blocks are FULLY SATURATED
+    // with white text (like tasks) so they read as confirmed/solid, not tentative — a desaturated
+    // block makes the scanner stop and check if it's real. (Named developer-constant; easy to retune.)
     var OWNER_PALETTE = {
-      me: {  // Mark — warm family: yellow prep → orange travel → green event (unchanged)
-        prepRGB:"244,194,13", prepEdge:"#e6cf6f", prepInk:"#7a6410",
-        travRGB:"245,123,19", travEdge:"#e0a066", travInk:"#8a4a10",
-        evBg:"rgba(28,172,120,0.34)", evEdge:"#1CAC78", evInk:"#12603f"
+      me: {  // Mark — warm family: yellow prep → orange travel → Crayola-green event
+        prepRGB:"244,194,13", prepEdge:"#e6cf6f",
+        travRGB:"245,123,19", travEdge:"#e0a066",
+        evBg:"#1CAC78", evEdge:"#158a60"
       },
       her: { // Anastasia — fuchsia family: light-fuchsia prep → deep-fuchsia travel → solid fuchsia event
-        prepRGB:"224,120,180", prepEdge:"#e6a9cc", prepInk:"#8a2b62",
-        travRGB:"212,90,158", travEdge:"#d488b4", travInk:"#7a1a52",
-        evBg:"rgba(178,38,120,0.30)", evEdge:"#b2267a", evInk:"#6e1550"
+        prepRGB:"224,120,180", prepEdge:"#e6a9cc",
+        travRGB:"212,90,158", travEdge:"#d488b4",
+        evBg:"#b2267a", evEdge:"#8e1c60"
       }
     };
+    var HATCH_INK = "#000";   // hatch labels: pure black (hatching carries the signal)
+    var EVENT_INK = "#fff";   // solid event labels: white on saturated fill (like tasks)
     var paletteFor = function(owner){ return OWNER_PALETTE[owner] || OWNER_PALETTE.me; };
 
     var canvasKids = [];
@@ -794,19 +798,21 @@ function App() {
         // are naturally skipped by the < checks — only the live event renders.
         var segs = [];
         var pal = paletteFor(it.owner);
-        if (it.prepStartMin < it.travelStartMin){ segs.push({a:it.prepStartMin,b:it.travelStartMin,bg:HATCH(pal.prepRGB),edge:pal.prepEdge,lab:"Prep: "+it.title,ink:pal.prepInk}); }
-        if (it.travelStartMin < it.eventStartMin){ segs.push({a:it.travelStartMin,b:it.eventStartMin,bg:HATCH(pal.travRGB),edge:pal.travEdge,lab:"Travel: "+it.title,ink:pal.travInk}); }
+        if (it.prepStartMin < it.travelStartMin){ segs.push({a:it.prepStartMin,b:it.travelStartMin,bg:HATCH(pal.prepRGB),edge:pal.prepEdge,lab:"Prep: "+it.title,ink:HATCH_INK}); }
+        if (it.travelStartMin < it.eventStartMin){ segs.push({a:it.travelStartMin,b:it.eventStartMin,bg:HATCH(pal.travRGB),edge:pal.travEdge,lab:"Travel: "+it.title,ink:HATCH_INK}); }
         var evActive = (nowMin>=it.eventStartMin && nowMin<it.endMin);
-        segs.push({a:it.eventStartMin,b:it.endMin,bg:pal.evBg,edge:pal.evEdge,lab:it.title,ink:pal.evInk,solid:true,active:evActive});
+        segs.push({a:it.eventStartMin,b:it.endMin,bg:pal.evBg,edge:pal.evEdge,lab:it.title,ink:EVENT_INK,solid:true,active:evActive});
         segs.forEach(function(sg,si){
           var segTop = Math.max(0,yOf(sg.a)), segH = Math.max(13,(sg.b-sg.a)*PX_PER_MIN-1);
           canvasKids.push(
             h("div",{key:(it.id||"a"+i)+"-"+si,style:{position:"absolute",left:50,right:6,top:segTop,height:segH,
               background:sg.bg,border:"1px solid "+sg.edge,borderRadius:5,padding:"2px 8px",overflow:"hidden",boxSizing:"border-box",
               outline:sg.active?("2px solid "+C.amber):"none"}},
-              h("div",{style:{fontSize:10,letterSpacing:.4,textTransform:"uppercase",color:sg.ink,fontWeight:700}},
+              h("div",{style:{fontSize:10,letterSpacing:.4,textTransform:"uppercase",color:sg.ink,fontWeight:700,
+                textShadow:sg.solid?"0 1px 1px rgba(0,0,0,0.25)":"none"}},
                 sg.solid ? (sg.active?"Now · ":"")+"" : sg.lab),
-              segH>28 ? h("div",{style:{fontSize:12.5,fontWeight:600,color:sg.solid?"#2c3a26":sg.ink,lineHeight:1.2}}, sg.lab) : null
+              segH>28 ? h("div",{style:{fontSize:12.5,fontWeight:600,color:sg.ink,lineHeight:1.2,
+                textShadow:sg.solid?"0 1px 1px rgba(0,0,0,0.25)":"none"}}, sg.lab) : null
             )
           );
         });
@@ -1096,7 +1102,7 @@ function App() {
     popupNode(),
     h("header",{style:{maxWidth:640,margin:"0",padding:"max(28px, env(safe-area-inset-top)) 24px 10px"}},
       h("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:8}},
-        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.3.7"),
+        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.3.8"),
         h("div",{style:{fontSize:12.5,color:C.sub,fontStyle:"italic"}}, "The important that is placed and the urgent that is done")
       ),
       h("div",{id:"status-bar",style:{color:(status.indexOf("Could not")===0||status.indexOf("failed")>-1)?"#a23":C.faint}}, status),
