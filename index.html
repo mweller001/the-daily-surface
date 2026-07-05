@@ -27,6 +27,7 @@
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 
 <script>
 "use strict";
@@ -36,6 +37,142 @@
 var SUPABASE_URL = "https://vjkuksmwycnklkfpngtq.supabase.co";
 var SUPABASE_KEY = "sb_publishable_2gnanut8Zvt6cyt8BBCUfw_e4ZU81YA";
 var db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+// ============================================================
+//  GCal — Google Calendar read layer (single-user, GIS token flow)
+//  Reads a CURATED set of calendars, maps events to the app's
+//  appointment shape {id, title, start, end, calendarId, owner}.
+//  Source calendar (not color) is the authoritative owner signal.
+// ============================================================
+var GCal = (function () {
+  var CLIENT_ID = "420326114521-ov77gi8f8hfgg7knfaa9qv3i1cvobm21.apps.googleusercontent.com";
+  var SCOPE = "https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.readonly";
+
+  // CURATED SET — the only calendars the surface reads. Others in the account are ignored.
+  // owner is the yours-vs-hers signal, derived from source-calendar id (structural, not color).
+  // (Developer constant, settled by fact. Not a user setting.)
+  var CALENDARS = [
+    { id: "mweller001@gmail.com", owner: "me"  },
+    { id: "aweller001@gmail.com", owner: "her" }
+  ];
+
+  var tokenClient = null;
+  var accessToken = null;
+
+  // Two-digit local clock time "HH:MM" from an ISO datetime string.
+  function hhmm(iso) {
+    var d = new Date(iso);
+    var h = d.getHours(), m = d.getMinutes();
+    return (h < 10 ? "0" + h : "" + h) + ":" + (m < 10 ? "0" + m : "" + m);
+  }
+
+  // Bounds for "today" in local time, as ISO strings for the API's timeMin/timeMax.
+  function todayBounds() {
+    var now = new Date();
+    var start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+    var end   = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+    return { timeMin: start.toISOString(), timeMax: end.toISOString() };
+  }
+
+  // Map one Google event (from a given curated calendar) to the app appt shape.
+  // Skips all-day events (no dateTime, only date) — the canvas is a timed surface;
+  // all-day handling is a later increment. Returns null to skip.
+  function mapEvent(ev, cal) {
+    if (!ev.start || !ev.start.dateTime || !ev.end || !ev.end.dateTime) return null; // all-day / date-only → skip for now
+    // prep/travel live in the event's private extendedProperties (proven in the write test).
+    // Absent → 0, which the canvas renders as no reserved prep/travel segment. Reading them here
+    // is shape-completion for v0.2.15's reserved-block math, not a new feature surface.
+    var xp = (ev.extendedProperties && ev.extendedProperties.private) || {};
+    var prep = parseInt(xp.dsPrep, 10); if (isNaN(prep)) prep = 0;
+    var travel = parseInt(xp.dsTravel, 10); if (isNaN(travel)) travel = 0;
+    return {
+      id: "g:" + cal.id + ":" + ev.id,     // namespaced so it can't collide with Supabase ids
+      title: ev.summary || "(busy)",
+      start: hhmm(ev.start.dateTime),
+      end: hhmm(ev.end.dateTime),
+      prep: prep,
+      travel: travel,
+      calendarId: cal.id,
+      owner: cal.owner,
+      // carried for the read-only detail popup (next increment); harmless now
+      location: ev.location || "",
+      description: ev.description || ""
+    };
+  }
+
+  // Fetch today's timed events from one calendar → array of appt-shaped objects.
+  function fetchCalendar(cal, bounds) {
+    var url = "https://www.googleapis.com/calendar/v3/calendars/"
+      + encodeURIComponent(cal.id) + "/events"
+      + "?timeMin=" + encodeURIComponent(bounds.timeMin)
+      + "&timeMax=" + encodeURIComponent(bounds.timeMax)
+      + "&singleEvents=true&orderBy=startTime";
+    return fetch(url, { headers: { "Authorization": "Bearer " + accessToken } })
+      .then(function (r) {
+        if (!r.ok) throw new Error("calendar " + cal.id + " HTTP " + r.status);
+        return r.json();
+      })
+      .then(function (data) {
+        return (data.items || [])
+          .map(function (ev) { return mapEvent(ev, cal); })
+          .filter(function (x) { return x !== null; });
+      });
+  }
+
+  // Fetch all curated calendars' today events, flattened.
+  function fetchTodayEvents() {
+    if (!accessToken) return Promise.reject(new Error("not connected"));
+    var bounds = todayBounds();
+    return Promise.all(CALENDARS.map(function (cal) { return fetchCalendar(cal, bounds); }))
+      .then(function (lists) {
+        return lists.reduce(function (acc, l) { return acc.concat(l); }, []);
+      });
+  }
+
+  // Init the GIS token client. Resolves when the library is present.
+  function init() {
+    return new Promise(function (resolve, reject) {
+      var tries = 0;
+      var iv = setInterval(function () {
+        if (window.google && google.accounts && google.accounts.oauth2) {
+          clearInterval(iv);
+          tokenClient = google.accounts.oauth2.initTokenClient({
+            client_id: CLIENT_ID,
+            scope: SCOPE,
+            callback: function () {} // per-request callback set in connect()
+          });
+          resolve(true);
+        } else if (++tries > 100) { // ~10s
+          clearInterval(iv);
+          reject(new Error("Google library did not load"));
+        }
+      }, 100);
+    });
+  }
+
+  // Trigger the consent popup; resolves with the token on success.
+  function connect() {
+    return new Promise(function (resolve, reject) {
+      if (!tokenClient) { reject(new Error("not initialized")); return; }
+      tokenClient.callback = function (resp) {
+        if (resp.error) { reject(new Error(resp.error)); return; }
+        accessToken = resp.access_token;
+        resolve(accessToken);
+      };
+      tokenClient.requestAccessToken({ prompt: "" }); // "" = silent if already granted, else prompts
+    });
+  }
+
+  function isConnected() { return !!accessToken; }
+
+  return {
+    init: init,
+    connect: connect,
+    isConnected: isConnected,
+    fetchTodayEvents: fetchTodayEvents,
+    CALENDARS: CALENDARS
+  };
+})();
 
 // ============================================================
 //  Data layer — schema-light against the `items` table, tolerant reads.
@@ -250,6 +387,9 @@ function App() {
   var s_sort = useState("default"), sortKey = s_sort[0], setSortKey = s_sort[1];
   var s_tasks = useState([]), tasks = s_tasks[0], setTasks = s_tasks[1];
   var s_appts = useState([]), appts = s_appts[0], setAppts = s_appts[1];
+  // calendar connection: "idle" | "connecting" | "connected" | "error"
+  var s_cal = useState("idle"), calState = s_cal[0], setCalState = s_cal[1];
+  var s_calMsg = useState(""), calMsg = s_calMsg[0], setCalMsg = s_calMsg[1];
   var s_hist = useState(false), historyOpen = s_hist[0], setHistoryOpen = s_hist[1];
   var s_now = useState(nowMinutes()), nowMin = s_now[0], setNowMin = s_now[1];
   // v0.2 contextual popup: which task and where on screen.
@@ -277,11 +417,44 @@ function App() {
   useEffect(function(){
     Store.loadAll().then(function(rows){
       setTasks(rows.filter(function(r){return r.kind==="task";}).map(readTask));
-      setAppts(rows.filter(function(r){return r.kind==="appointment";}).map(readAppt));
+      // Appointments no longer come from Supabase stub rows — they come from Google Calendar
+      // once connected (see connectCalendar). Start empty; the canvas shows tasks-only until connect.
       setStatus("");
     }).catch(function(e){
       setStatus("Could not reach the data store: " + (e.message||e));
     }).then(function(){ setLoading(false); });
+  }, []);
+
+  // Init the Google Calendar library on mount (does not prompt — just readies the token client).
+  useEffect(function(){
+    GCal.init().catch(function(e){ setCalMsg(e.message||String(e)); });
+  }, []);
+
+  // Connect → consent popup → fetch today's events from the curated calendars → feed the canvas.
+  // Real Google events REPLACE the (retired) Supabase stub appointments. prep/travel ride along
+  // from each event's extendedProperties (0 when absent).
+  var connectCalendar = useCallback(function(){
+    setCalState("connecting"); setCalMsg("");
+    GCal.connect().then(function(){
+      return GCal.fetchTodayEvents();
+    }).then(function(events){
+      setAppts(events);
+      setCalState("connected");
+      setCalMsg(events.length + " event" + (events.length===1?"":"s") + " today");
+    }).catch(function(e){
+      setCalState("error");
+      setCalMsg(e.message||String(e));
+    });
+  }, []);
+
+  // Manual refresh once connected (re-pull today's events).
+  var refreshCalendar = useCallback(function(){
+    if (!GCal.isConnected()) return;
+    setCalMsg("refreshing…");
+    GCal.fetchTodayEvents().then(function(events){
+      setAppts(events);
+      setCalMsg(events.length + " event" + (events.length===1?"":"s") + " today");
+    }).catch(function(e){ setCalMsg(e.message||String(e)); });
   }, []);
 
   // PROMPT FIRING ENGINE (client-only, Rung 1). Runs each tick (via nowMin dep).
@@ -870,10 +1043,17 @@ function App() {
     popupNode(),
     h("header",{style:{maxWidth:640,margin:"0",padding:"max(28px, env(safe-area-inset-top)) 24px 10px"}},
       h("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:8}},
-        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.2.15"),
+        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.3.1"),
         h("div",{style:{fontSize:12.5,color:C.sub,fontStyle:"italic"}}, "The important that is placed and the urgent that is done")
       ),
       h("div",{id:"status-bar",style:{color:(status.indexOf("Could not")===0||status.indexOf("failed")>-1)?"#a23":C.faint}}, status),
+      // Calendar connection control
+      h("div",{style:{display:"flex",alignItems:"center",gap:10,margin:"2px 0 6px"}},
+        (calState==="connected")
+          ? h("button",{onClick:refreshCalendar,style:{border:"1px solid "+C.panelEdge,background:"transparent",color:C.sub,borderRadius:5,padding:"5px 11px",fontSize:12,fontWeight:600,cursor:"pointer"}}, "\u21bb Calendar")
+          : h("button",{onClick:connectCalendar,disabled:calState==="connecting",style:{border:"none",background:calState==="connecting"?C.faint:C.good,color:"#fff",borderRadius:5,padding:"6px 13px",fontSize:12,fontWeight:600,cursor:calState==="connecting"?"default":"pointer"}}, calState==="connecting"?"Connecting\u2026":"Connect Calendar"),
+        calMsg ? h("span",{style:{fontSize:11.5,color:calState==="error"?"#a23":C.faint}}, calMsg) : null
+      ),
       h("div",{style:{height:1,background:C.panelEdge}})
     ),
     h("div",{className:"il-tabs",style:{maxWidth:640,margin:"0",padding:"10px 24px 0",gap:6}}, tabBtns),
