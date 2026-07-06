@@ -721,8 +721,16 @@ function App() {
           travelStart: inProgress ? s : (s - (a.travel||0)) }); })
       .filter(function(b){ return b.e > nowMin; })
       .sort(function(x,y){ return x.reserveStart-y.reserveStart; });
-    // slots: the open time between now→first event, event→event, last event→horizon
-    var slots=[], cursor=nowMin, i;
+    // slots: the open time between now→first event, event→event, last event→horizon.
+    // Cursor starts at now, BUT if any events are in progress right now, it starts at the LATEST
+    // end among them — you are not free until the last currently-active event ends. Both owners'
+    // events count: Anastasia's events are frequently Mark's commitments too (caregiver), so any
+    // in-progress event blocks the schedule, not just Mark's. Without this, tasks pack into time
+    // you are actually occupied when two events overlap the present moment.
+    var inProgNow = blocks.filter(function(b){ return b.inProgress; });
+    var freeFrom = nowMin;
+    inProgNow.forEach(function(b){ if (b.e > freeFrom) freeFrom = b.e; });
+    var slots=[], cursor=freeFrom, i;
     for (i=0;i<blocks.length;i++){
       if (blocks[i].reserveStart > cursor){ slots.push({ s:cursor, e:blocks[i].reserveStart, after:i }); } // gap before block i's reserved edge
       cursor = Math.max(cursor, blocks[i].e);
@@ -901,9 +909,17 @@ function App() {
     // shows in full, with the now-bar floating to its true position within it. Nothing older than
     // that event's start is shown. Zero in-progress events, or MORE than one (ambiguous — deferred),
     // fall back to origin = now. Tasks are never "in progress" for this purpose — events only.
+    // canvas top = origin. Normally origin = now (now-bar pinned at top). EXCEPTION: when one or
+    // more events are in progress, origin backs up to the EARLIEST start among them, so every
+    // in-progress event renders in full (with the now-bar floating to its true position within
+    // them). Two overlapping in-progress events lay out via the collision columns, each full, with
+    // the now-bar crossing both. Nothing older than the earliest in-progress start shows. Zero
+    // in-progress events → origin = now (pinned at top). Events only; tasks never trigger this.
     var inProgressEvents = schedule.blocks.filter(function(b){ return b.inProgress; });
     var originMin = nowMin;
-    if (inProgressEvents.length === 1){ originMin = inProgressEvents[0].s; }
+    if (inProgressEvents.length >= 1){
+      originMin = inProgressEvents.reduce(function(m,b){ return Math.min(m, b.s); }, nowMin);
+    }
 
     // bottom = end of the last fitted thing (min 90 min of runway so it never collapses)
     var lastEnd = nowMin + 90;
@@ -1421,7 +1437,7 @@ function App() {
     eventFormNode(),
     h("header",{style:{maxWidth:640,margin:"0",padding:"max(28px, env(safe-area-inset-top)) 24px 10px"}},
       h("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:8}},
-        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.4.4"),
+        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.4.5"),
         h("div",{style:{fontSize:12.5,color:C.sub,fontStyle:"italic"}}, "The important that is placed and the urgent that is done")
       ),
       h("div",{id:"status-bar",style:{color:(status.indexOf("Could not")===0||status.indexOf("failed")>-1)?"#a23":C.faint}}, status),
