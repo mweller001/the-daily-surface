@@ -452,12 +452,36 @@ function TaskForm(props){
   var s_w = useState(init.warnMin || 0), warn=s_w[0], setWarn=s_w[1];
   var s_open = useState(props.mode==="edit" ? !!init.showOn : false), open=s_open[0], setOpen=s_open[1];
 
+  // Guard against a second submit while the first is still in flight — an async save meant a
+  // double-tap could create the task twice.
+  var s_saving = useState(false), saving=s_saving[0], setSaving=s_saving[1];
+
+  // Reset every field to empty/default. Capture mode only: after a task is saved the form must be
+  // clear for the next one, otherwise the old title lingers and has to be hand-deleted (and a
+  // second Capture would duplicate it).
+  function resetFields(){
+    setTitle(""); setEffort(2); setPriority(5);
+    setShowOn(""); setFireAt(""); setWarn(0); setOpen(false);
+  }
+
   function submit(){
+    if (saving) return;                       // in-flight: ignore repeat taps
     var t = title.trim(); if(!t) return;
     var fields = { title:t, effort:clampEffort(effort), priority:priority,
       showOn: showOn || null, fireAt: showOn && fireAt ? fireAt : null,
       warnMin: showOn && fireAt ? (warn||0) : 0 };
-    props.onSubmit(fields);
+    var r = props.onSubmit(fields);
+    // Clear ONLY once the database entry actually succeeded — a failed save keeps what was typed
+    // rather than silently discarding it. onSubmit returns a Promise in capture mode.
+    if (r && typeof r.then === "function") {
+      setSaving(true);
+      r.then(function(ok){
+        setSaving(false);
+        if (ok !== false && props.mode !== "edit") resetFields();
+      }).catch(function(){ setSaving(false); });   // keep the text on failure
+    } else if (props.mode !== "edit") {
+      resetFields();
+    }
   }
 
   var effDots=[]; for(var n=1;n<=MAX_SPOON;n++){ (function(n){ effDots.push(
@@ -500,7 +524,7 @@ function TaskForm(props){
       h("button",{onClick:props.onCancel,style:{border:"1px solid "+C.panelEdge,background:"transparent",color:C.sub,borderRadius:6,padding:"10px 16px",fontSize:13,fontWeight:600,cursor:"pointer"}}, "Cancel"),
       h("button",{onClick:submit,style:{background:C.ink,color:C.paper,border:"none",borderRadius:6,padding:"10px 20px",fontSize:13,fontWeight:600,cursor:"pointer"}}, "Save"));
   } else {
-    actionRow = h("button",{onClick:submit,style:{marginLeft:"auto",background:C.ink,color:C.paper,border:"none",borderRadius:3,padding:"9px 16px",fontSize:13,cursor:"pointer",fontWeight:600}}, "Capture");
+    actionRow = h("button",{onClick:submit,disabled:saving,style:{marginLeft:"auto",background:saving?C.faint:C.ink,color:C.paper,border:"none",borderRadius:3,padding:"9px 16px",fontSize:13,cursor:saving?"default":"pointer",fontWeight:600}}, saving?"Saving\u2026":"Capture");
   }
 
   return h("div",null,
@@ -841,14 +865,17 @@ function App() {
   }, [schedule.blocks, sorted.done, packFromMin]);
 
   // TaskForm (capture mode) hands back assembled fields.
+  // Returns a Promise resolving true on success / false on failure, so the capture form knows
+  // whether to clear itself (clear only on a real database write).
   var submitNewTask = useCallback(function(fields){
     var dataObj = { title:fields.title, project:"—", priority:fields.priority, effort:clampEffort(fields.effort), done:false };
     if (fields.showOn){ dataObj.showOn = fields.showOn; if(fields.fireAt){ dataObj.fireAt = fields.fireAt; dataObj.warnMin = fields.warnMin||0; } }
     setStatus("Saving…");
-    Store.add("task", dataObj).then(function(row){
+    return Store.add("task", dataObj).then(function(row){
       setTasks(function(prev){ return prev.concat([readTask(row)]); });
       setStatus("");
-    }).catch(function(e){ setStatus("Save failed: " + (e.message||e)); });
+      return true;
+    }).catch(function(e){ setStatus("Save failed: " + (e.message||e)); return false; });
   }, []);
 
   // Merge-and-persist: apply a patch, write the full data object back via the shared serializer.
@@ -1488,7 +1515,7 @@ function App() {
     eventFormNode(),
     h("header",{style:{maxWidth:640,margin:"0",padding:"max(28px, env(safe-area-inset-top)) 24px 10px"}},
       h("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:8}},
-        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.5.0"),
+        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.5.1"),
         h("div",{style:{fontSize:12.5,color:C.sub,fontStyle:"italic"}}, "The important that is placed and the urgent that is done")
       ),
       h("div",{id:"status-bar",style:{color:(status.indexOf("Could not")===0||status.indexOf("failed")>-1)?"#a23":C.faint}}, status),
