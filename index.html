@@ -66,11 +66,14 @@ var GCal = (function () {
     return (h < 10 ? "0" + h : "" + h) + ":" + (m < 10 ? "0" + m : "" + m);
   }
 
-  // Bounds for "today" in local time, as ISO strings for the API's timeMin/timeMax.
-  function todayBounds() {
-    var now = new Date();
-    var start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
-    var end   = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+  // Bounds for a given local date ("YYYY-MM-DD"), as ISO strings for the API's timeMin/timeMax.
+  // Defaults to today when no date is passed, so existing callers are unchanged.
+  function dateBounds(dateStr) {
+    var d;
+    if (dateStr) { var p = dateStr.split("-"); d = new Date(+p[0], (+p[1]) - 1, +p[2]); }
+    else { d = new Date(); }
+    var start = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
+    var end   = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);
     return { timeMin: start.toISOString(), timeMax: end.toISOString() };
   }
 
@@ -120,12 +123,12 @@ var GCal = (function () {
   // that ends ON the 4th has end.date = the 5th. The API query for today therefore returns
   // 4th-ending events whose exclusive end touches today. Belongs-to-today test: start.date <= today
   // AND today < end.date. Without the end check, a 4th-ending event wrongly shows on the 5th.
-  function mapAllDay(ev, cal) {
+  function mapAllDay(ev, cal, viewDate) {
     if (!ev.start || ev.start.dateTime || !ev.start.date) return null; // only date-only events
-    var today = todayDateStr();
+    var day = viewDate || todayDateStr();
     var startD = ev.start.date;                                   // inclusive
     var endD = (ev.end && ev.end.date) ? ev.end.date : startD;    // EXCLUSIVE (day after last covered)
-    if (!(startD <= today && today < endD)) return null;          // today must be within [start, end)
+    if (!(startD <= day && day < endD)) return null;              // the day must be within [start, end)
     return {
       id: "gA:" + cal.id + ":" + ev.id,
       title: ev.summary || "(all day)",
@@ -136,7 +139,7 @@ var GCal = (function () {
   }
 
   // Fetch today's events from one calendar → { timed:[...], allDay:[...] }.
-  function fetchCalendar(cal, bounds) {
+  function fetchCalendar(cal, bounds, viewDate) {
     var url = "https://www.googleapis.com/calendar/v3/calendars/"
       + encodeURIComponent(cal.id) + "/events"
       + "?timeMin=" + encodeURIComponent(bounds.timeMin)
@@ -151,16 +154,18 @@ var GCal = (function () {
         var items = data.items || [];
         return {
           timed: items.map(function (ev) { return mapEvent(ev, cal); }).filter(function (x) { return x !== null; }),
-          allDay: items.map(function (ev) { return mapAllDay(ev, cal); }).filter(function (x) { return x !== null; })
+          allDay: items.map(function (ev) { return mapAllDay(ev, cal, viewDate); }).filter(function (x) { return x !== null; })
         };
       });
   }
 
   // Fetch all curated calendars → { timed:[...], allDay:[...] } flattened across calendars.
-  function fetchTodayEvents() {
+  // Fetch a given date's events ("YYYY-MM-DD"); defaults to today.
+  function fetchEventsForDate(dateStr) {
     if (!accessToken) return Promise.reject(new Error("not connected"));
-    var bounds = todayBounds();
-    return Promise.all(CALENDARS.map(function (cal) { return fetchCalendar(cal, bounds); }))
+    var day = dateStr || todayDateStr();
+    var bounds = dateBounds(day);
+    return Promise.all(CALENDARS.map(function (cal) { return fetchCalendar(cal, bounds, day); }))
       .then(function (results) {
         return {
           timed:  results.reduce(function (acc, r) { return acc.concat(r.timed); }, []),
@@ -240,8 +245,8 @@ var GCal = (function () {
     if(!guardCal(s.calId)) return Promise.reject(new Error("refusing write outside curated calendars"));
     var body = {};
     if(fields.title!=null) body.summary = fields.title;
-    if(fields.start) body.start = { dateTime: todayISO(fields.start), timeZone: localTZ() };
-    if(fields.end)   body.end   = { dateTime: todayISO(fields.end),   timeZone: localTZ() };
+    if(fields.start) body.start = { dateTime: dateISO(fields.start, fields.onDate), timeZone: localTZ() };
+    if(fields.end)   body.end   = { dateTime: dateISO(fields.end,   fields.onDate), timeZone: localTZ() };
     if(fields.prep!=null || fields.travel!=null){
       body.extendedProperties = { private:{} };
       if(fields.prep!=null)   body.extendedProperties.private.dsPrep = String(fields.prep);
@@ -259,8 +264,8 @@ var GCal = (function () {
     if(!accessToken) return Promise.reject(new Error("not connected"));
     var body = {
       summary: fields.title || "(untitled)",
-      start: { dateTime: todayISO(fields.start), timeZone: localTZ() },
-      end:   { dateTime: todayISO(fields.end),   timeZone: localTZ() },
+      start: { dateTime: dateISO(fields.start, fields.onDate), timeZone: localTZ() },
+      end:   { dateTime: dateISO(fields.end,   fields.onDate), timeZone: localTZ() },
       extendedProperties: { private:{
         dsPrep: String(fields.prep!=null?fields.prep:DEFAULT_PREP),
         dsTravel: String(fields.travel!=null?fields.travel:DEFAULT_TRAVEL)
@@ -273,9 +278,14 @@ var GCal = (function () {
   }
 
   // Build an RFC3339 local datetime for TODAY at "HH:MM".
-  function todayISO(hhmmStr){
+  // Build an RFC3339 local datetime for a given date ("YYYY-MM-DD") at "HH:MM".
+  // Defaults to today when no date is given. Parameterized so events created/edited while a
+  // FORWARD date is in view land on THAT date, not silently on today.
+  function dateISO(hhmmStr, dateStr){
     var p = (hhmmStr||"09:00").split(":");
-    var n = new Date();
+    var n;
+    if (dateStr) { var dp = dateStr.split("-"); n = new Date(+dp[0], (+dp[1])-1, +dp[2]); }
+    else { n = new Date(); }
     var d = new Date(n.getFullYear(), n.getMonth(), n.getDate(), parseInt(p[0],10)||0, parseInt(p[1],10)||0, 0);
     // format as local RFC3339 with offset
     function pad(x){ return x<10?"0"+x:""+x; }
@@ -289,7 +299,8 @@ var GCal = (function () {
     init: init,
     connect: connect,
     isConnected: isConnected,
-    fetchTodayEvents: fetchTodayEvents,
+    fetchEventsForDate: fetchEventsForDate,
+    fetchTodayEvents: fetchEventsForDate,   // alias — existing callers unchanged
     patchPrepTravel: patchPrepTravel,
     patchEvent: patchEvent,
     createEvent: createEvent,
@@ -418,6 +429,12 @@ function priorityTone(p){ return prioritySwatch(p).color; }
 function nowMinutes(){ var d=new Date(); return d.getHours()*60 + d.getMinutes(); }
 // date helpers for prompt visibility + firing. Local time, YYYY-MM-DD.
 function todayStr(){ var d=new Date(); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
+// shift a "YYYY-MM-DD" by N days (local, DST-safe via Date arithmetic)
+function shiftDate(ds,n){ var p=ds.split("-"); var d=new Date(+p[0],(+p[1])-1,+p[2]); d.setDate(d.getDate()+n);
+  return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
+// short human label for a date ("Thu Jul 16")
+function dayLabel(ds){ var p=ds.split("-"); var d=new Date(+p[0],(+p[1])-1,+p[2]);
+  return d.toLocaleDateString(undefined,{weekday:"short",month:"short",day:"numeric"}); }
 function timeToMin(s){ if(!s) return null; var p=String(s).split(":"); return (+p[0])*60 + (+p[1]); }
 function minToTime(m){ m=((m%1440)+1440)%1440; return String(Math.floor(m/60)).padStart(2,"0")+":"+String(m%60).padStart(2,"0"); }
 
@@ -514,8 +531,23 @@ function App() {
   var s_cal = useState("idle"), calState = s_cal[0], setCalState = s_cal[1];
   var s_calMsg = useState(""), calMsg = s_calMsg[0], setCalMsg = s_calMsg[1];
   var s_allday = useState([]), allDayFlags = s_allday[0], setAllDayFlags = s_allday[1];
+  // FORWARD VIEW: which date the surface is showing. Today by default.
+  // Today is the SPECIAL case (the pack-from bar is pinned to the live clock); any other date is
+  // the GENERAL case (the bar sits at the day-start setting, since a future day has no "now").
+  var s_vd = useState(todayStr()), viewDate = s_vd[0], setViewDate = s_vd[1];
+  // Day-start ("pack-from") time for non-today dates, as minutes. A SETTING: the workday start
+  // varies by job (7, 8, 5, 11...). Also the test instrument — set it to 0 (midnight) and the
+  // day's tasks cluster before the first event (tasks shown effectively separate from events);
+  // set it to the real day-start and tasks interleave with events via the existing packing logic.
+  var s_ds = useState(8*60), dayStartMin = s_ds[0], setDayStartMin = s_ds[1];
+  var isToday = (viewDate === todayStr());
   var s_hist = useState(false), historyOpen = s_hist[0], setHistoryOpen = s_hist[1];
   var s_now = useState(nowMinutes()), nowMin = s_now[0], setNowMin = s_now[1];
+  // THE PACK-FROM BAR (generalizes the now-bar). On TODAY it is the live clock — identical to
+  // prior behaviour. On any other date there is no "now", so it is the day-start setting.
+  // Everything that used to schedule/anchor from nowMin now uses packFromMin; nowMin remains the
+  // true clock and still drives the prompt engine (which only ever fires on today).
+  var packFromMin = isToday ? nowMin : dayStartMin;
   // v0.2 contextual popup: which task and where on screen.
   var s_pop = useState(null), popup = s_pop[0], setPopup = s_pop[1]; // {id,x,y} or null
   // read-only event detail popup: which event and where.
@@ -564,7 +596,7 @@ function App() {
   var connectCalendar = useCallback(function(){
     setCalState("connecting"); setCalMsg("");
     GCal.connect().then(function(){
-      return GCal.fetchTodayEvents();
+      return GCal.fetchEventsForDate(viewDate);
     }).then(function(res){
       setAppts(res.timed);
       setAllDayFlags(res.allDay);
@@ -577,15 +609,22 @@ function App() {
   }, []);
 
   // Manual refresh once connected (re-pull today's events).
-  var refreshCalendar = useCallback(function(){
+  // Refresh the calendar for whichever date is in view.
+  var refreshCalendar = useCallback(function(dateArg){
     if (!GCal.isConnected()) return;
+    var day = dateArg || viewDate;
     setCalMsg("refreshing…");
-    GCal.fetchTodayEvents().then(function(res){
+    GCal.fetchEventsForDate(day).then(function(res){
       setAppts(res.timed);
       setAllDayFlags(res.allDay);
-      setCalMsg(res.timed.length + " event" + (res.timed.length===1?"":"s") + " today");
+      setCalMsg(res.timed.length + " event" + (res.timed.length===1?"":"s") + (day===todayStr()?" today":" that day"));
     }).catch(function(e){ setCalMsg(e.message||String(e)); });
-  }, []);
+  }, [viewDate]);
+
+  // When the view date changes, pull that date's events (if connected).
+  useEffect(function(){
+    if (GCal.isConnected()) refreshCalendar(viewDate);
+  }, [viewDate]);
 
   // Open the edit form for an existing event (from its detail popup).
   var openEventEdit = useCallback(function(appId){
@@ -593,13 +632,15 @@ function App() {
     if(!ev) return;
     setEvPopup(null);
     setEvForm({ mode:"edit", id:appId, title:ev.title, start:ev.start, end:ev.end,
-      prep:(ev.prep!=null?ev.prep:15), travel:(ev.travel!=null?ev.travel:30), owner:ev.owner, saving:false, err:"" });
-  }, [appts]);
+      prep:(ev.prep!=null?ev.prep:15), travel:(ev.travel!=null?ev.travel:30), owner:ev.owner,
+      onDate:viewDate, saving:false, err:"" });
+  }, [appts, viewDate]);
 
   // Open the create form (blank, times default, on Mark's calendar).
   var openEventCreate = useCallback(function(){
-    setEvForm({ mode:"create", title:"", start:"09:00", end:"10:00", prep:15, travel:30, saving:false, err:"" });
-  }, []);
+    setEvForm({ mode:"create", title:"", start:"09:00", end:"10:00", prep:15, travel:30,
+      onDate:viewDate, saving:false, err:"" });
+  }, [viewDate]);
 
   var closeEventForm = useCallback(function(){ setEvForm(null); }, []);
 
@@ -610,12 +651,12 @@ function App() {
     if(!f) return;
     var p;
     if(f.mode==="edit"){
-      p = GCal.patchEvent(f.id, { title:f.title, start:f.start, end:f.end, prep:parseInt(f.prep,10), travel:parseInt(f.travel,10) });
+      p = GCal.patchEvent(f.id, { title:f.title, start:f.start, end:f.end, prep:parseInt(f.prep,10), travel:parseInt(f.travel,10), onDate:f.onDate });
     } else {
-      p = GCal.createEvent({ title:f.title, start:f.start, end:f.end, prep:parseInt(f.prep,10), travel:parseInt(f.travel,10) });
+      p = GCal.createEvent({ title:f.title, start:f.start, end:f.end, prep:parseInt(f.prep,10), travel:parseInt(f.travel,10), onDate:f.onDate });
     }
     p.then(function(){
-      return GCal.fetchTodayEvents();
+      return GCal.fetchEventsForDate(viewDate);
     }).then(function(res){
       setAppts(res.timed); setAllDayFlags(res.allDay);
       setEvForm(null);
@@ -681,16 +722,24 @@ function App() {
 
   var sorted = useMemo(function(){
     var today = todayStr();
-    // visibility gate: a task is eligible when it has no showOn, or its showOn is today-or-earlier.
-    // future-dated tasks are dormant — not sorted, placed, or counted, until their date arrives.
-    function visible(t){ return !t.showOn || t.showOn <= today; }
+    // VISIBILITY GATE — differs by which date is in view, because the two views answer different
+    // questions:
+    //   TODAY  = "everything owed me now" → roll-forward: no date, or a date today-or-earlier, so
+    //            an undone task from a past day still shows rather than silently vanishing.
+    //   OTHER  = "what is planned for that day" → EXACT match on showOn. Roll-forward would pile
+    //            every unfinished task from every prior day onto a future date, which is wrong.
+    //   Undated tasks belong to the floating pool and appear on TODAY only.
+    function visible(t){
+      if (isToday) return !t.showOn || t.showOn <= today;
+      return t.showOn === viewDate;
+    }
     var active = tasks.filter(function(t){return !t.done && !t.background && visible(t);});
     var done = tasks.filter(function(t){return t.done;});
     var background = tasks.filter(function(t){return t.background && !t.done && visible(t);});
     var dormant = tasks.filter(function(t){return !t.done && !t.background && !visible(t);});
     active.sort(SORTS[sortKey].fn);
     return { active:active, done:done, background:background, dormant:dormant };
-  }, [tasks, sortKey, nowMin]);
+  }, [tasks, sortKey, packFromMin, isToday, viewDate]);
 
   var topBackground = useMemo(function(){
     var bgs = sorted.background.slice().sort(function(a,b){return b.priority-a.priority;});
@@ -702,7 +751,7 @@ function App() {
   // Forward-only cursor, strict sort order, roll-forward, NO backfill. Gaps are acceptable.
   // A task's shown time is the real slot it landed in — never an invented stamp.
   var schedule = useMemo(function(){
-    var horizon = nowMin + 48*60; // 48h ahead; revisit when calendar events bring real dates
+    var horizon = packFromMin + 48*60; // 48h ahead from the pack-from bar
     function toMin(s){ var p=s.split(":"); return (+p[0])*60 + (+p[1]); }
     // events: fixed blocks, sorted by reserved front edge, only those not already past.
     // s = event start; e = event end; reserveStart = start - travel - prep (the leave/prep edge
@@ -714,12 +763,12 @@ function App() {
         // live event. reserveStart becomes the event start itself (no pre-buffer). This both
         // fixes the past-clipped-segment layout corruption and yields correct "you're in this
         // until end" behavior; open-time still starts from e (the event end) via the slot math.
-        var inProgress = (s <= nowMin && e > nowMin);
+        var inProgress = (s <= packFromMin && e > packFromMin);
         var reserveStart = inProgress ? s : (s - (a.travel||0) - (a.prep||0));
         return Object.assign({}, a, { s:s, e:e, reserveStart:reserveStart, inProgress:inProgress,
           prepStart: inProgress ? s : (s - (a.travel||0) - (a.prep||0)),
           travelStart: inProgress ? s : (s - (a.travel||0)) }); })
-      .filter(function(b){ return b.e > nowMin; })
+      .filter(function(b){ return b.e > packFromMin; })
       .sort(function(x,y){ return x.reserveStart-y.reserveStart; });
     // slots: the open time between now→first event, event→event, last event→horizon.
     // Cursor starts at now, BUT if any events are in progress right now, it starts at the LATEST
@@ -728,7 +777,7 @@ function App() {
     // in-progress event blocks the schedule, not just Mark's. Without this, tasks pack into time
     // you are actually occupied when two events overlap the present moment.
     var inProgNow = blocks.filter(function(b){ return b.inProgress; });
-    var freeFrom = nowMin;
+    var freeFrom = packFromMin;
     inProgNow.forEach(function(b){ if (b.e > freeFrom) freeFrom = b.e; });
     var slots=[], cursor=freeFrom, i;
     for (i=0;i<blocks.length;i++){
@@ -778,18 +827,18 @@ function App() {
     pushSlotTasks(blocks.length);       // tasks in the tail slot (after last event)
     unfitted.forEach(function(p){ railItems.push(Object.assign({ type:"task", unfitted:true }, p)); });
     return { blocks:blocks, railItems:railItems, unfittedCount:unfitted.length };
-  }, [appts, sorted.active, nowMin]);
+  }, [appts, sorted.active, packFromMin]);
 
   var totalForeground = useMemo(function(){
     return sorted.active.reduce(function(s,t){ return s+(SPOON_MIN[t.effort]||30); }, 0);
   }, [sorted.active]);
 
   var dayHistory = useMemo(function(){
-    var elapsedAppts = schedule.blocks.filter(function(b){ return b.e <= nowMin; });
+    var elapsedAppts = schedule.blocks.filter(function(b){ return b.e <= packFromMin; });
     var combined = sorted.done.map(function(t){ return {key:"t-"+t.id, kind:"task", id:t.id, title:t.title}; })
       .concat(elapsedAppts.map(function(b){ return {key:"a-"+b.id, kind:"appt", title:b.title, start:b.start, end:b.end}; }));
     return { elapsedAppts:elapsedAppts, combined:combined };
-  }, [schedule.blocks, sorted.done, nowMin]);
+  }, [schedule.blocks, sorted.done, packFromMin]);
 
   // TaskForm (capture mode) hands back assembled fields.
   var submitNewTask = useCallback(function(fields){
@@ -901,7 +950,7 @@ function App() {
     // (past-horizon) tasks listed below in flow. Reserved blocks (prep→travel→event) are
     // hatched; tasks are solid, colored by priority swatch. Scale is PX_PER_MIN. ----
     var PX_PER_MIN = 1.6;
-    var fitted = schedule.railItems.filter(function(it){ return !it.unfitted && it.endMin > nowMin; });
+    var fitted = schedule.railItems.filter(function(it){ return !it.unfitted && it.endMin > packFromMin; });
     var unfittedItems = schedule.railItems.filter(function(it){ return it.unfitted; });
 
     // canvas top = origin. Normally origin = now (now-bar pinned at top). EXCEPTION: when exactly
@@ -916,13 +965,13 @@ function App() {
     // the now-bar crossing both. Nothing older than the earliest in-progress start shows. Zero
     // in-progress events → origin = now (pinned at top). Events only; tasks never trigger this.
     var inProgressEvents = schedule.blocks.filter(function(b){ return b.inProgress; });
-    var originMin = nowMin;
+    var originMin = packFromMin;
     if (inProgressEvents.length >= 1){
-      originMin = inProgressEvents.reduce(function(m,b){ return Math.min(m, b.s); }, nowMin);
+      originMin = inProgressEvents.reduce(function(m,b){ return Math.min(m, b.s); }, packFromMin);
     }
 
     // bottom = end of the last fitted thing (min 90 min of runway so it never collapses)
-    var lastEnd = nowMin + 90;
+    var lastEnd = packFromMin + 90;
     fitted.forEach(function(it){ if(it.endMin>lastEnd) lastEnd = it.endMin; });
     var spanMin = Math.max(90, lastEnd - originMin);
     var canvasH = spanMin * PX_PER_MIN;
@@ -1012,12 +1061,13 @@ function App() {
       canvasKids.push(h("div",{key:"q"+qm,style:{position:"absolute",left:38,width:6,top:yOf(qm),
         borderTop:"1px solid "+C.faint,opacity:.55,pointerEvents:"none"}}));
     }
-    // now line — floats to its true position (yOf(nowMin)); = top only when origin == now
-    var nowY = yOf(nowMin);
+    // the pack-from bar — on TODAY this is the live now-line (unchanged behaviour); on another
+    // date it marks the day-start the schedule packs from. Floats to its true position.
+    var nowY = yOf(packFromMin);
     canvasKids.push(h("div",{key:"nowl",style:{position:"absolute",left:0,right:0,top:nowY,
       borderTop:"2px solid "+C.nowline,zIndex:4,pointerEvents:"none"}}));
     canvasKids.push(h("div",{key:"nowll",style:{position:"absolute",left:0,width:40,top:nowY-7,textAlign:"right",
-      fontSize:10,fontWeight:700,color:C.nowline,fontVariantNumeric:"tabular-nums",zIndex:4}}, fmtMin(nowMin)));
+      fontSize:10,fontWeight:700,color:C.nowline,fontVariantNumeric:"tabular-nums",zIndex:4}}, fmtMin(packFromMin)));
 
     // blocks
     fitted.forEach(function(it,i){
@@ -1031,7 +1081,7 @@ function App() {
         var pal = paletteFor(it.owner);
         if (it.prepStartMin < it.travelStartMin){ segs.push({a:it.prepStartMin,b:it.travelStartMin,bg:HATCH(pal.prepRGB),edge:pal.prepEdge,lab:"Prep: "+it.title,ink:HATCH_INK}); }
         if (it.travelStartMin < it.eventStartMin){ segs.push({a:it.travelStartMin,b:it.eventStartMin,bg:HATCH(pal.travRGB),edge:pal.travEdge,lab:"Travel: "+it.title,ink:HATCH_INK}); }
-        var evActive = (nowMin>=it.eventStartMin && nowMin<it.endMin);
+        var evActive = (packFromMin>=it.eventStartMin && packFromMin<it.endMin);
         segs.push({a:it.eventStartMin,b:it.endMin,bg:pal.evBg,edge:pal.evEdge,lab:it.title,ink:EVENT_INK,solid:true,active:evActive});
         var cf = it.colFrac || {L:0, R:1};
         var split = (cf.L>0 || cf.R<1);
@@ -1270,7 +1320,8 @@ function App() {
     var field = function(key, label, node){ return h("div",{key:key,style:{marginBottom:12}}, lbl(label), node); };
     var body = [
       h("div",{key:"hd",style:{fontFamily:"Georgia, serif",fontSize:18,fontWeight:600,color:C.ink,marginBottom:14}},
-        isEdit ? "Edit event" : "New event — today, your calendar"),
+        isEdit ? ("Edit event — " + dayLabel(evForm.onDate||todayStr()))
+               : ("New event — " + dayLabel(evForm.onDate||todayStr()) + ", your calendar")),
       field("title","Title", h("input",{type:"text",value:evForm.title,placeholder:"Event title",
         onChange:function(e){ upd("title", e.target.value); }, style:inputStyle})),
       h("div",{key:"times",style:{display:"flex",gap:10,marginBottom:12}},
@@ -1437,14 +1488,40 @@ function App() {
     eventFormNode(),
     h("header",{style:{maxWidth:640,margin:"0",padding:"max(28px, env(safe-area-inset-top)) 24px 10px"}},
       h("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:8}},
-        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.4.5"),
+        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.5.0"),
         h("div",{style:{fontSize:12.5,color:C.sub,fontStyle:"italic"}}, "The important that is placed and the urgent that is done")
       ),
       h("div",{id:"status-bar",style:{color:(status.indexOf("Could not")===0||status.indexOf("failed")>-1)?"#a23":C.faint}}, status),
+      // DATE SELECTOR — roll through days one at a time. Today is the default and the special
+      // case; any other date is the forward (or backward) view.
+      h("div",{style:{display:"flex",alignItems:"center",gap:6,margin:"2px 0 6px",flexWrap:"wrap"}},
+        h("button",{onClick:function(){ setViewDate(shiftDate(viewDate,-1)); },
+          style:{border:"1px solid "+C.panelEdge,background:"transparent",color:C.sub,borderRadius:5,padding:"5px 10px",fontSize:13,fontWeight:700,cursor:"pointer"}}, "\u2039"),
+        h("input",{type:"date",value:viewDate,onChange:function(e){ if(e.target.value) setViewDate(e.target.value); },
+          style:{border:"1px solid "+C.panelEdge,background:C.paper,color:C.ink,borderRadius:5,padding:"4px 8px",fontSize:13,fontWeight:600}}),
+        h("button",{onClick:function(){ setViewDate(shiftDate(viewDate,1)); },
+          style:{border:"1px solid "+C.panelEdge,background:"transparent",color:C.sub,borderRadius:5,padding:"5px 10px",fontSize:13,fontWeight:700,cursor:"pointer"}}, "\u203a"),
+        !isToday ? h("button",{onClick:function(){ setViewDate(todayStr()); },
+          style:{border:"1px solid "+C.amber,background:C.amberSoft,color:C.ink,borderRadius:5,padding:"5px 11px",fontSize:12,fontWeight:700,cursor:"pointer"}}, "Today") : null,
+        !isToday ? h("span",{style:{fontSize:11.5,color:C.faint}}, dayLabel(viewDate)) : null
+      ),
+      // PACK-FROM control — only on non-today dates (today packs from the live clock).
+      // Midnight clusters the day's tasks before the first event (tasks effectively separate);
+      // the day-start time interleaves them with events via the existing packing logic.
+      !isToday ? h("div",{style:{display:"flex",alignItems:"center",gap:6,margin:"0 0 6px",flexWrap:"wrap"}},
+        h("span",{style:{fontSize:11,textTransform:"uppercase",letterSpacing:.4,color:C.faint,fontWeight:700}}, "Pack from"),
+        h("input",{type:"time",value:fmtMin(dayStartMin),
+          onChange:function(e){ if(e.target.value){ var p=e.target.value.split(":"); setDayStartMin((+p[0])*60+(+p[1])); } },
+          style:{border:"1px solid "+C.panelEdge,background:C.paper,color:C.ink,borderRadius:5,padding:"4px 8px",fontSize:13,fontWeight:600}}),
+        h("button",{onClick:function(){ setDayStartMin(0); },
+          style:{border:"1px solid "+C.panelEdge,background:dayStartMin===0?C.amberSoft:"transparent",color:C.sub,borderRadius:5,padding:"4px 9px",fontSize:11.5,fontWeight:600,cursor:"pointer"}}, "Midnight"),
+        h("button",{onClick:function(){ setDayStartMin(8*60); },
+          style:{border:"1px solid "+C.panelEdge,background:dayStartMin===8*60?C.amberSoft:"transparent",color:C.sub,borderRadius:5,padding:"4px 9px",fontSize:11.5,fontWeight:600,cursor:"pointer"}}, "Day start")
+      ) : null,
       // Calendar connection control
       h("div",{style:{display:"flex",alignItems:"center",gap:10,margin:"2px 0 6px"}},
         (calState==="connected")
-          ? h("button",{onClick:refreshCalendar,style:{border:"1px solid "+C.panelEdge,background:"transparent",color:C.sub,borderRadius:5,padding:"5px 11px",fontSize:12,fontWeight:600,cursor:"pointer"}}, "\u21bb Calendar")
+          ? h("button",{onClick:function(){ refreshCalendar(viewDate); },style:{border:"1px solid "+C.panelEdge,background:"transparent",color:C.sub,borderRadius:5,padding:"5px 11px",fontSize:12,fontWeight:600,cursor:"pointer"}}, "\u21bb Calendar")
           : h("button",{onClick:connectCalendar,disabled:calState==="connecting",style:{border:"none",background:calState==="connecting"?C.faint:C.good,color:"#fff",borderRadius:5,padding:"6px 13px",fontSize:12,fontWeight:600,cursor:calState==="connecting"?"default":"pointer"}}, calState==="connecting"?"Connecting\u2026":"Connect Calendar"),
         (calState==="connected")
           ? h("button",{onClick:openEventCreate,style:{border:"1px solid "+C.good,background:"transparent",color:C.good,borderRadius:5,padding:"5px 11px",fontSize:12,fontWeight:700,cursor:"pointer"}}, "+ Event")
