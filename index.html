@@ -333,6 +333,76 @@ var Store = {
     });
   }
 };
+// ---- RECURRENCE: the "recipe". Pure function — turns a recurrence spec + anchor date into a
+// finite list of "YYYY-MM-DD" instance dates. Run ONCE at creation; nothing is stored afterward.
+// spec = { every:Number, unit:"day"|"week"|"month"|"year", days:[0..6] (weekly only, 0=Sun),
+//          endMode:"count"|"date", count:Number, endDate:"YYYY-MM-DD" }
+// anchor = "YYYY-MM-DD" (the task's showOn, or today). Returns [] if spec invalid.
+function ymd(d){ return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
+function parseYMD(s){ var p=s.split("-"); return new Date(+p[0],(+p[1])-1,+p[2]); }
+// Build a date at (year, month, wantedDay) but CLAMP the day to the month's real length, so
+// "monthly on the 31st" lands on Feb 28/29, Apr 30, etc., instead of overflowing into next month.
+function clampedDate(year, month, wantedDay){
+  var lastDay = new Date(year, month+1, 0).getDate();   // day 0 of next month = last day of this
+  return new Date(year, month, Math.min(wantedDay, lastDay));
+}
+var HARD_CAP = 366; // safety ceiling so a bad spec can never runaway-generate
+
+function generateRecurrence(spec, anchor){
+  if(!spec || !anchor) return [];
+  var every = Math.max(1, parseInt(spec.every,10)||1);
+  var unit = spec.unit || "week";
+  var start = parseYMD(anchor);
+  var out = [];
+  var wantCount = spec.endMode==="count" ? Math.max(1, parseInt(spec.count,10)||1) : null;
+  var endD = spec.endMode==="date" && spec.endDate ? parseYMD(spec.endDate) : null;
+  if(spec.endMode==="date" && !endD) return [];      // date mode needs a date
+  if(spec.endMode!=="date" && spec.endMode!=="count") return [];
+
+  function pushIfInRange(d){
+    if(endD && d.getTime() > endD.getTime()) return false;
+    out.push(ymd(d));
+    return true;
+  }
+
+  if(unit==="week"){
+    // day-of-week selection; interval skips (every N-th week). Anchor's week is week 0.
+    var days = (spec.days && spec.days.length) ? spec.days.slice().sort(function(a,b){return a-b;}) : [start.getDay()];
+    // walk week-blocks from the start of the anchor's week
+    var weekStart = new Date(start); weekStart.setDate(start.getDate() - start.getDay()); // back to Sunday
+    var guard=0;
+    while(guard++ < HARD_CAP){
+      for(var i=0;i<days.length;i++){
+        var d = new Date(weekStart); d.setDate(weekStart.getDate() + days[i]);
+        if(d.getTime() < start.getTime()) continue;         // don't emit before the anchor
+        if(wantCount!=null){ if(out.length>=wantCount) return out; }
+        if(!pushIfInRange(d)){ if(endD) return out; }
+      }
+      if(wantCount!=null && out.length>=wantCount) return out;
+      weekStart.setDate(weekStart.getDate() + 7*every);      // skip (every-1)=interval weeks
+      if(out.length>=HARD_CAP) return out;
+    }
+    return out;
+  }
+
+  // day / month / year: step from the anchor by (every) units each time.
+  var d = new Date(start), guard2=0;
+  while(guard2++ < HARD_CAP){
+    if(wantCount!=null && out.length>=wantCount) return out;
+    if(!pushIfInRange(d)){ if(endD) return out; }
+    if(wantCount!=null && out.length>=wantCount) return out;
+    if(unit==="day")   d = new Date(d.getFullYear(), d.getMonth(), d.getDate()+every);
+    else if(unit==="month") d = clampedDate(d.getFullYear(), d.getMonth()+every, start.getDate());
+    else if(unit==="year")  d = clampedDate(d.getFullYear()+every, d.getMonth(), start.getDate());
+    else return out;
+    if(out.length>=HARD_CAP) return out;
+  }
+  return out;
+}
+
+// A seriesId: timestamp + random, unique enough for tagging instances of one series.
+function makeSeriesId(){ return "s" + Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
+
 function readTask(row) {
   var d = row.data || {};
   return {
@@ -347,6 +417,8 @@ function readTask(row) {
     // prompt fields — all optional; absent = no prompt. showOn gates visibility,
     // fireAt is the Begin moment (a "HH:MM" on the showOn date), warnMin the pre-warning.
     showOn: d.showOn || null,            // "YYYY-MM-DD" or null
+    seriesId: d.seriesId || null,        // recurrence tag (null = not part of a series)
+    seriesSlot: (typeof d.seriesSlot==="number"?d.seriesSlot:null),
     fireAt: d.fireAt || null,            // "HH:MM" or null (requires showOn)
     warnMin: typeof d.warnMin === "number" ? d.warnMin : 0, // 0 = none
     updated_at: row.updated_at
@@ -366,7 +438,9 @@ function taskToData(t){
   return {
     title: t.title, project: t.project, priority: t.priority, effort: clampEffort(t.effort),
     note: t.note, background: t.background, done: t.done,
-    showOn: t.showOn || null, fireAt: t.fireAt || null, warnMin: t.warnMin || 0
+    showOn: t.showOn || null, fireAt: t.fireAt || null, warnMin: t.warnMin || 0,
+    // preserve recurrence tags through every write, so an edited instance stays part of its series
+    seriesId: t.seriesId || null, seriesSlot: (typeof t.seriesSlot==="number"? t.seriesSlot : null)
   };
 }
 
@@ -451,6 +525,14 @@ function TaskForm(props){
   var s_fa = useState(init.fireAt || ""), fireAt=s_fa[0], setFireAt=s_fa[1];
   var s_w = useState(init.warnMin || 0), warn=s_w[0], setWarn=s_w[1];
   var s_open = useState(props.mode==="edit" ? !!init.showOn : false), open=s_open[0], setOpen=s_open[1];
+  // RECURRENCE (create mode only — an existing instance has no stored pattern to re-edit).
+  var s_rep = useState(false), rep=s_rep[0], setRep=s_rep[1];           // "Repeats" on/off
+  var s_rEvery = useState(1), rEvery=s_rEvery[0], setREvery=s_rEvery[1];
+  var s_rUnit = useState("week"), rUnit=s_rUnit[0], setRUnit=s_rUnit[1];
+  var s_rDays = useState([]), rDays=s_rDays[0], setRDays=s_rDays[1];     // weekly: [0..6], 0=Sun
+  var s_rEndMode = useState("count"), rEndMode=s_rEndMode[0], setREndMode=s_rEndMode[1];
+  var s_rCount = useState(10), rCount=s_rCount[0], setRCount=s_rCount[1];
+  var s_rEndDate = useState(""), rEndDate=s_rEndDate[0], setREndDate=s_rEndDate[1];
 
   // Guard against a second submit while the first is still in flight — an async save meant a
   // double-tap could create the task twice.
@@ -462,6 +544,8 @@ function TaskForm(props){
   function resetFields(){
     setTitle(""); setEffort(2); setPriority(5);
     setShowOn(""); setFireAt(""); setWarn(0); setOpen(false);
+    setRep(false); setREvery(1); setRUnit("week"); setRDays([]);
+    setREndMode("count"); setRCount(10); setREndDate("");
   }
 
   function submit(){
@@ -470,6 +554,12 @@ function TaskForm(props){
     var fields = { title:t, effort:clampEffort(effort), priority:priority,
       showOn: showOn || null, fireAt: showOn && fireAt ? fireAt : null,
       warnMin: showOn && fireAt ? (warn||0) : 0 };
+    // Attach the recurrence recipe when Repeats is on (create mode only). The handler runs it.
+    if (props.mode!=="edit" && rep){
+      fields.recurrence = { every:rEvery, unit:rUnit,
+        days: rUnit==="week" ? rDays.slice() : [],
+        endMode:rEndMode, count:rCount, endDate:rEndDate };
+    }
     var r = props.onSubmit(fields);
     // Clear ONLY once the database entry actually succeeded — a failed save keeps what was typed
     // rather than silently discarding it. onSubmit returns a Promise in capture mode.
@@ -515,6 +605,63 @@ function TaskForm(props){
         : "Fires at "+fireAt+(warn?" with a "+warn+"-min warning.":" (no pre-warning).")));
   }
 
+  // RECURRENCE UI — create mode only. "Repeats" toggle → custom recipe form.
+  var repRows = [];
+  if (props.mode!=="edit"){
+    repRows.push(
+      h("button",{key:"rtoggle",onClick:function(){ setRep(!rep); },
+        style:{background:"none",border:"none",padding:0,marginTop:12,cursor:"pointer",fontSize:12,color:C.cold,fontWeight:600}},
+        (rep?"\u2212 repeats":"+ repeats") + (rep?"":" ")));
+    if (rep){
+      var DOW = [["Su",0],["Mo",1],["Tu",2],["We",3],["Th",4],["Fr",5],["Sa",6]];
+      repRows.push(
+        h("div",{key:"rbody",style:{marginTop:10,padding:"12px",border:"1px solid "+C.panelEdge,borderRadius:6,background:C.panel}},
+          // repeat every N unit
+          h("div",{style:{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}},
+            h("span",{style:{fontSize:12,color:C.sub}}, "Repeat every"),
+            h("input",{type:"number",min:"1",value:String(rEvery),onChange:function(e){ setREvery(Math.max(1,parseInt(e.target.value,10)||1)); },
+              style:{width:56,border:"1px solid "+C.panelEdge,borderRadius:3,padding:"6px 8px",fontSize:13,fontFamily:"inherit",color:C.ink}}),
+            h("select",{value:rUnit,onChange:function(e){ setRUnit(e.target.value); },
+              style:{border:"1px solid "+C.panelEdge,borderRadius:3,padding:"6px 8px",fontSize:13,fontFamily:"inherit",color:C.ink}},
+              [["day","day"],["week","week"],["month","month"],["year","year"]].map(function(o){ return h("option",{key:o[0],value:o[0]}, o[1]+(rEvery>1?"s":"")); }))
+          ),
+          // repeats on (weekly only)
+          rUnit==="week" ? h("div",{style:{marginTop:12}},
+            h("div",{style:{fontSize:12,color:C.sub,marginBottom:6}}, "Repeats on"),
+            h("div",{style:{display:"flex",gap:6,flexWrap:"wrap"}},
+              DOW.map(function(dd){
+                var on = rDays.indexOf(dd[1])>=0;
+                return h("button",{key:dd[1],onClick:function(){
+                    setRDays(function(prev){ var i=prev.indexOf(dd[1]); if(i>=0){ var c=prev.slice(); c.splice(i,1); return c; } return prev.concat([dd[1]]); });
+                  },
+                  style:{width:34,height:34,borderRadius:17,cursor:"pointer",fontSize:12,fontWeight:700,
+                    border:"1px solid "+(on?C.ink:C.panelEdge),background:on?C.ink:"transparent",color:on?C.paper:C.sub}}, dd[0]);
+              })),
+            h("div",{style:{fontSize:10.5,color:C.faint,fontStyle:"italic",marginTop:6}},
+              rDays.length? "" : "No day picked — the start date's weekday is used.")
+          ) : null,
+          // ends
+          h("div",{style:{marginTop:12}},
+            h("div",{style:{fontSize:12,color:C.sub,marginBottom:6}}, "Ends"),
+            h("div",{style:{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}},
+              h("select",{value:rEndMode,onChange:function(e){ setREndMode(e.target.value); },
+                style:{border:"1px solid "+C.panelEdge,borderRadius:3,padding:"6px 8px",fontSize:13,fontFamily:"inherit",color:C.ink}},
+                [["count","after N occurrences"],["date","on date"]].map(function(o){ return h("option",{key:o[0],value:o[0]}, o[1]); })),
+              rEndMode==="count"
+                ? h("span",{style:{display:"inline-flex",alignItems:"center",gap:6}},
+                    h("input",{type:"number",min:"1",value:String(rCount),onChange:function(e){ setRCount(Math.max(1,parseInt(e.target.value,10)||1)); },
+                      style:{width:60,border:"1px solid "+C.panelEdge,borderRadius:3,padding:"6px 8px",fontSize:13,fontFamily:"inherit",color:C.ink}}),
+                    h("span",{style:{fontSize:12,color:C.sub}}, "occurrences"))
+                : h("input",{type:"date",value:rEndDate,onChange:function(e){ setREndDate(e.target.value); },
+                    style:{border:"1px solid "+C.panelEdge,borderRadius:3,padding:"6px 8px",fontSize:13,fontFamily:"inherit",color:C.ink}})
+            ),
+            h("div",{style:{fontSize:10.5,color:C.faint,fontStyle:"italic",marginTop:8}},
+              "Starts " + (showOn||"today") + ". Creates the instances now, as ordinary tasks — no \u201cnever\u201d.")
+          )
+        ));
+    }
+  }
+
   var primaryLabel = props.mode==="edit" ? "Save" : "Capture";
   var actionRow;
   if (props.mode==="edit"){
@@ -540,6 +687,7 @@ function TaskForm(props){
         swatchRow(priority, function(v){ setPriority(v); }, 20)),
       props.mode!=="edit" ? actionRow : null),
     h("div",null, promptRows),
+    props.mode!=="edit" ? h("div",null, repRows) : null,
     props.mode==="edit" ? actionRow : null
   );
 }
@@ -580,6 +728,7 @@ function App() {
   var s_evform = useState(null), evForm = s_evform[0], setEvForm = s_evform[1];
   // full edit modal: task id being edited, or null. Confirm-delete flag within it.
   var s_editId = useState(null), editId = s_editId[0], setEditId = s_editId[1];
+  var s_escope = useState("one"), editScope = s_escope[0], setEditScope = s_escope[1]; // "one" | "following"
   var s_confirmDel = useState(false), confirmDel = s_confirmDel[0], setConfirmDel = s_confirmDel[1];
   // active fired prompt shown full-screen: { id, stage:"warn"|"begin" } or null
   var s_fire = useState(null), activePrompt = s_fire[0], setActivePrompt = s_fire[1];
@@ -867,9 +1016,37 @@ function App() {
   // TaskForm (capture mode) hands back assembled fields.
   // Returns a Promise resolving true on success / false on failure, so the capture form knows
   // whether to clear itself (clear only on a real database write).
+  // Build the base data object shared by a single task and every recurrence instance.
+  function buildTaskData(fields, showOnOverride){
+    var d = { title:fields.title, project:"—", priority:fields.priority, effort:clampEffort(fields.effort), done:false };
+    var so = showOnOverride!==undefined ? showOnOverride : fields.showOn;
+    if (so){ d.showOn = so; if(fields.fireAt){ d.fireAt = fields.fireAt; d.warnMin = fields.warnMin||0; } }
+    return d;
+  }
+
   var submitNewTask = useCallback(function(fields){
-    var dataObj = { title:fields.title, project:"—", priority:fields.priority, effort:clampEffort(fields.effort), done:false };
-    if (fields.showOn){ dataObj.showOn = fields.showOn; if(fields.fireAt){ dataObj.fireAt = fields.fireAt; dataObj.warnMin = fields.warnMin||0; } }
+    // RECURRING: run the recipe once, create N tagged instances. Non-recurring: one row (unchanged).
+    if (fields.recurrence){
+      var anchor = fields.showOn || todayStr();
+      var dates = generateRecurrence(fields.recurrence, anchor);
+      if (!dates.length){ setStatus("Recurrence produced no dates — check the settings."); return Promise.resolve(false); }
+      var sid = makeSeriesId();
+      setStatus("Saving "+dates.length+" occurrences…");
+      // Create sequentially-ish via Promise.all; each instance is an ordinary task carrying seriesId.
+      var adds = dates.map(function(ds, i){
+        var data = buildTaskData(fields, ds);
+        data.seriesId = sid;
+        data.seriesSlot = i;
+        return Store.add("task", data);
+      });
+      return Promise.all(adds).then(function(rows){
+        setTasks(function(prev){ return prev.concat(rows.map(readTask)); });
+        setStatus("");
+        return true;
+      }).catch(function(e){ setStatus("Save failed: " + (e.message||e)); return false; });
+    }
+    // Single task (unchanged behaviour).
+    var dataObj = buildTaskData(fields);
     setStatus("Saving…");
     return Store.add("task", dataObj).then(function(row){
       setTasks(function(prev){ return prev.concat([readTask(row)]); });
@@ -897,22 +1074,44 @@ function App() {
   var setPriorityFor = useCallback(function(id, v){ persist(id, { priority:v }); }, [persist]);
 
   // Open the full edit modal for a task (from the contextual popup's Edit button).
-  var openEditor = useCallback(function(id){ setEditId(id); setConfirmDel(false); setPopup(null); }, []);
+  var openEditor = useCallback(function(id){ setEditId(id); setConfirmDel(false); setEditScope("one"); setPopup(null); }, []);
 
   // TaskForm (edit mode) hands back all fields → patch the task and close.
-  var saveEdit = useCallback(function(fields){
+  // CONTENT-only patch (title/priority/effort/prompt). Recurrence/cadence is never edited — there
+  // is no stored pattern; to change cadence, delete-following and create a new series.
+  // scope "following": apply to every instance of the same series dated on/after this one.
+  var saveEdit = useCallback(function(fields, scopeArg){
     var id = editId; if(id==null) return;
-    persist(id, { title:fields.title, priority:fields.priority, effort:fields.effort,
-      showOn:fields.showOn, fireAt:fields.fireAt, warnMin:fields.warnMin });
+    var scope = scopeArg || editScope;
+    var me = tasks.filter(function(x){return x.id===id;})[0];
+    var patch = { title:fields.title, priority:fields.priority, effort:fields.effort,
+      showOn:fields.showOn, fireAt:fields.fireAt, warnMin:fields.warnMin };
+    if (scope==="following" && me && me.seriesId){
+      // CONTENT fields only propagate forward (not showOn — each instance keeps its own date).
+      var fwd = { title:fields.title, priority:fields.priority, effort:fields.effort,
+        fireAt:fields.fireAt, warnMin:fields.warnMin };
+      var targets = tasks.filter(function(x){ return x.seriesId===me.seriesId && x.showOn && me.showOn && x.showOn >= me.showOn; });
+      targets.forEach(function(x){ persist(x.id, x.id===id ? patch : fwd); });
+    } else {
+      persist(id, patch);
+    }
     setEditId(null); setConfirmDel(false);
-  }, [editId, persist]);
+  }, [editId, persist, tasks, editScope]);
 
-  var deleteTask = useCallback(function(){
+  var deleteTask = useCallback(function(scopeArg){
     var id = editId; if(id==null) return;
-    setTasks(function(prev){ return prev.filter(function(x){return x.id!==id;}); });
-    Store.remove(id).catch(function(e){ setStatus("Delete failed: " + (e.message||e)); });
+    var scope = typeof scopeArg==="string" ? scopeArg : editScope;
+    var me = tasks.filter(function(x){return x.id===id;})[0];
+    var ids;
+    if (scope==="following" && me && me.seriesId){
+      ids = tasks.filter(function(x){ return x.seriesId===me.seriesId && x.showOn && me.showOn && x.showOn >= me.showOn; }).map(function(x){return x.id;});
+    } else {
+      ids = [id];
+    }
+    setTasks(function(prev){ return prev.filter(function(x){ return ids.indexOf(x.id)<0; }); });
+    ids.forEach(function(rid){ Store.remove(rid).catch(function(e){ setStatus("Delete failed: " + (e.message||e)); }); });
     setEditId(null); setConfirmDel(false);
-  }, [editId]);
+  }, [editId, tasks, editScope]);
 
   var closePopup = useCallback(function(){ setPopup(null); }, []);
 
@@ -1478,20 +1677,38 @@ function App() {
     if (!t){ return null; }
     var body;
     if (confirmDel){
+      var inSeries = !!t.seriesId;
       body = h("div",null,
-        h("div",{style:{fontSize:16,fontWeight:600,color:C.ink,marginBottom:8}}, "Delete this task?"),
-        h("div",{style:{fontSize:13,color:C.sub,marginBottom:18}}, "\u201C"+t.title+"\u201D will be permanently removed."),
-        h("div",{style:{display:"flex",gap:8}},
-          h("button",{onClick:function(){ setConfirmDel(false); },style:{flex:1,border:"1px solid "+C.panelEdge,background:"transparent",color:C.sub,borderRadius:6,padding:"11px 0",fontSize:13,fontWeight:600,cursor:"pointer"}}, "Keep"),
-          h("button",{onClick:deleteTask,style:{flex:1,border:"none",background:"#c25",color:"#fff",borderRadius:6,padding:"11px 0",fontSize:13,fontWeight:600,cursor:"pointer"}}, "Delete")
-        )
+        h("div",{style:{fontSize:16,fontWeight:600,color:C.ink,marginBottom:8}}, inSeries?"Delete recurring task?":"Delete this task?"),
+        h("div",{style:{fontSize:13,color:C.sub,marginBottom:18}}, "\u201C"+t.title+"\u201D" + (inSeries?" is part of a series.":" will be permanently removed.")),
+        inSeries
+          ? h("div",{style:{display:"flex",flexDirection:"column",gap:8}},
+              h("button",{onClick:function(){ deleteTask("one"); },style:{border:"none",background:"#c25",color:"#fff",borderRadius:6,padding:"11px 0",fontSize:13,fontWeight:600,cursor:"pointer"}}, "Delete this one"),
+              h("button",{onClick:function(){ deleteTask("following"); },style:{border:"none",background:"#c25",color:"#fff",borderRadius:6,padding:"11px 0",fontSize:13,fontWeight:600,cursor:"pointer"}}, "Delete this and following"),
+              h("button",{onClick:function(){ setConfirmDel(false); },style:{border:"1px solid "+C.panelEdge,background:"transparent",color:C.sub,borderRadius:6,padding:"11px 0",fontSize:13,fontWeight:600,cursor:"pointer"}}, "Keep")
+            )
+          : h("div",{style:{display:"flex",gap:8}},
+              h("button",{onClick:function(){ setConfirmDel(false); },style:{flex:1,border:"1px solid "+C.panelEdge,background:"transparent",color:C.sub,borderRadius:6,padding:"11px 0",fontSize:13,fontWeight:600,cursor:"pointer"}}, "Keep"),
+              h("button",{onClick:function(){ deleteTask("one"); },style:{flex:1,border:"none",background:"#c25",color:"#fff",borderRadius:6,padding:"11px 0",fontSize:13,fontWeight:600,cursor:"pointer"}}, "Delete")
+            )
       );
     } else {
-      body = h(TaskForm,{ mode:"edit",
+      var scopeSel = t.seriesId ? h("div",{style:{marginBottom:14,padding:"10px 12px",border:"1px solid "+C.panelEdge,borderRadius:6,background:C.panel}},
+        h("div",{style:{fontSize:11,textTransform:"uppercase",letterSpacing:.4,color:C.faint,fontWeight:700,marginBottom:8}}, "Recurring task — apply to"),
+        h("div",{style:{display:"flex",gap:8}},
+          [["one","This one"],["following","This and following"]].map(function(o){
+            var on = editScope===o[0];
+            return h("button",{key:o[0],onClick:function(){ setEditScope(o[0]); },
+              style:{flex:1,border:"1px solid "+(on?C.ink:C.panelEdge),background:on?C.ink:"transparent",color:on?C.paper:C.sub,borderRadius:6,padding:"8px 0",fontSize:12.5,fontWeight:600,cursor:"pointer"}}, o[1]);
+          })),
+        h("div",{style:{fontSize:10.5,color:C.faint,fontStyle:"italic",marginTop:8}},
+          "Changes content only. To change the cadence, delete this-and-following and make a new series.")
+      ) : null;
+      body = h("div",null, scopeSel, h(TaskForm,{ mode:"edit",
         initial:{ title:t.title, effort:t.effort, priority:t.priority, showOn:t.showOn, fireAt:t.fireAt, warnMin:t.warnMin },
-        onSubmit:saveEdit,
+        onSubmit:function(fields){ saveEdit(fields, editScope); },
         onCancel:function(){ setEditId(null); },
-        onDelete:function(){ setConfirmDel(true); } });
+        onDelete:function(){ setConfirmDel(true); } }));
     }
     return h("div",{key:"editbackdrop",onClick:function(){ if(!confirmDel) setEditId(null); },
         style:{position:"fixed",inset:0,zIndex:70,background:"rgba(28,31,38,0.45)",display:"flex",alignItems:"flex-start",justifyContent:"center",padding:"40px 18px",overflowY:"auto"}},
@@ -1515,7 +1732,7 @@ function App() {
     eventFormNode(),
     h("header",{style:{maxWidth:640,margin:"0",padding:"max(28px, env(safe-area-inset-top)) 24px 10px"}},
       h("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:8}},
-        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.5.1"),
+        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.6.0"),
         h("div",{style:{fontSize:12.5,color:C.sub,fontStyle:"italic"}}, "The important that is placed and the urgent that is done")
       ),
       h("div",{id:"status-bar",style:{color:(status.indexOf("Could not")===0||status.indexOf("failed")>-1)?"#a23":C.faint}}, status),
