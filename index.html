@@ -677,14 +677,29 @@ function TaskForm(props){
     }
   }
 
+  // Complete = gather the current field values (like submit) and hand them up to be saved-and-done.
+  function completeSubmit(){
+    var t = title.trim(); if(!t){ if(props.onComplete) props.onComplete(null); return; }
+    var fields = { title:t, effort:clampEffort(effort), priority:priority,
+      showOn: showOn || null, fireAt: showOn && fireAt ? fireAt : null,
+      warnMin: showOn && fireAt ? (warn||0) : 0 };
+    if (props.onComplete) props.onComplete(fields);
+  }
+
   var primaryLabel = props.mode==="edit" ? "Save" : "Capture";
   var actionRow;
   if (props.mode==="edit"){
-    actionRow = h("div",{style:{display:"flex",gap:8,marginTop:18,alignItems:"center"}},
-      h("button",{onClick:props.onDelete,style:{border:"1px solid #c25",background:"transparent",color:"#c25",borderRadius:6,padding:"10px 14px",fontSize:13,fontWeight:600,cursor:"pointer"}}, "Delete"),
-      h("span",{style:{flex:1}}),
-      h("button",{onClick:props.onCancel,style:{border:"1px solid "+C.panelEdge,background:"transparent",color:C.sub,borderRadius:6,padding:"10px 16px",fontSize:13,fontWeight:600,cursor:"pointer"}}, "Cancel"),
-      h("button",{onClick:submit,style:{background:C.ink,color:C.paper,border:"none",borderRadius:6,padding:"10px 20px",fontSize:13,fontWeight:600,cursor:"pointer"}}, "Save"));
+    actionRow = h("div",{style:{marginTop:18}},
+      // Complete: save current edits AND mark done, then close. One-way — a done task can't be
+      // edited (it lives in read-only history), so there's no un-done case here. Visually distinct
+      // (green, full-width) since it's a STATUS action, not part of the save/discard row.
+      props.onComplete ? h("button",{onClick:completeSubmit,
+        style:{width:"100%",marginBottom:10,background:C.good,color:"#fff",border:"none",borderRadius:6,padding:"11px 0",fontSize:13,fontWeight:700,cursor:"pointer"}}, "\u2713 Complete task") : null,
+      h("div",{style:{display:"flex",gap:8,alignItems:"center"}},
+        h("button",{onClick:props.onDelete,style:{border:"1px solid #c25",background:"transparent",color:"#c25",borderRadius:6,padding:"10px 14px",fontSize:13,fontWeight:600,cursor:"pointer"}}, "Delete"),
+        h("span",{style:{flex:1}}),
+        h("button",{onClick:props.onCancel,style:{border:"1px solid "+C.panelEdge,background:"transparent",color:C.sub,borderRadius:6,padding:"10px 16px",fontSize:13,fontWeight:600,cursor:"pointer"}}, "Cancel"),
+        h("button",{onClick:submit,style:{background:C.ink,color:C.paper,border:"none",borderRadius:6,padding:"10px 20px",fontSize:13,fontWeight:600,cursor:"pointer"}}, "Save")));
   } else {
     actionRow = h("button",{onClick:submit,disabled:saving,style:{marginLeft:"auto",background:saving?C.faint:C.ink,color:C.paper,border:"none",borderRadius:3,padding:"9px 16px",fontSize:13,cursor:saving?"default":"pointer",fontWeight:600}}, saving?"Saving\u2026":"Capture");
   }
@@ -1103,12 +1118,13 @@ function App() {
   // CONTENT-only patch (title/priority/effort/prompt). Recurrence/cadence is never edited — there
   // is no stored pattern; to change cadence, delete-following and create a new series.
   // scope "following": apply to every instance of the same series dated on/after this one.
-  var saveEdit = useCallback(function(fields, scopeArg){
+  var saveEdit = useCallback(function(fields, scopeArg, markDone){
     var id = editId; if(id==null) return;
     var scope = scopeArg || editScope;
     var me = tasks.filter(function(x){return x.id===id;})[0];
     var patch = { title:fields.title, priority:fields.priority, effort:fields.effort,
       showOn:fields.showOn, fireAt:fields.fireAt, warnMin:fields.warnMin };
+    if (markDone){ patch.done = true; patch.doneAt = todayStr(); }
     if (scope==="following" && me && me.seriesId){
       // CONTENT fields only propagate forward (not showOn — each instance keeps its own date).
       var fwd = { title:fields.title, priority:fields.priority, effort:fields.effort,
@@ -1378,7 +1394,10 @@ function App() {
             background:sw.color,border:"1px solid rgba(0,0,0,0.12)",borderRadius:5,padding:"2px 8px",overflow:"hidden",
             boxSizing:"border-box",color:"#fff",WebkitUserSelect:"none",userSelect:"none",touchAction:"pan-y",
             display:"flex",alignItems:"flex-start",gap:7}},ph),
-            h("button",{onClick:function(e){e.stopPropagation();toggleDone(it.id);},"aria-label":"mark done",
+            h("button",{onClick:function(e){e.stopPropagation();toggleDone(it.id);},
+              onPointerDown:function(e){e.stopPropagation();},
+              onPointerUp:function(e){e.stopPropagation();},
+              "aria-label":"mark done",
               style:{marginTop:2,width:14,height:14,flexShrink:0,border:"1.5px solid rgba(255,255,255,0.8)",borderRadius:3,background:"transparent",cursor:"pointer"}}),
             h("div",{style:{flex:1,minWidth:0,overflow:"hidden"}},
               h("div",{style:{fontSize:13,fontWeight:600,lineHeight:1.2,textShadow:"0 1px 1px rgba(0,0,0,0.25)",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}, it.title),
@@ -1428,7 +1447,10 @@ function App() {
           h("div",Object.assign({key:it.id||("u"+i),style:{border:"1px dashed "+sw.color,borderLeft:"5px solid "+sw.color,
             background:C.panel,borderRadius:3,padding:"9px 12px",marginBottom:8,display:"flex",gap:10,alignItems:"flex-start",
             WebkitUserSelect:"none",userSelect:"none",touchAction:"pan-y"}},ph),
-            h("button",{onClick:function(e){e.stopPropagation();toggleDone(it.id);},"aria-label":"mark done",
+            h("button",{onClick:function(e){e.stopPropagation();toggleDone(it.id);},
+              onPointerDown:function(e){e.stopPropagation();},
+              onPointerUp:function(e){e.stopPropagation();},
+              "aria-label":"mark done",
               style:{marginTop:2,width:16,height:16,flexShrink:0,border:"1.5px solid "+C.faint,borderRadius:3,background:"transparent",cursor:"pointer"}}),
             h("div",{style:{flex:1,minWidth:0}},
               h("div",{style:{fontSize:14,color:C.ink,fontWeight:500,lineHeight:1.3}}, it.title),
@@ -1782,6 +1804,7 @@ function App() {
       body = h("div",null, scopeSel, h(TaskForm,{ mode:"edit",
         initial:{ title:t.title, effort:t.effort, priority:t.priority, showOn:t.showOn, fireAt:t.fireAt, warnMin:t.warnMin },
         onSubmit:function(fields){ saveEdit(fields, editScope); },
+        onComplete:function(fields){ if(fields){ saveEdit(fields, "one", true); } else { setEditId(null); } },
         onCancel:function(){ setEditId(null); },
         onDelete:function(){ setConfirmDel(true); } }));
     }
@@ -1808,7 +1831,7 @@ function App() {
     eventFormNode(),
     h("header",{style:{maxWidth:640,margin:"0",padding:"max(28px, env(safe-area-inset-top)) 24px 10px"}},
       h("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:8}},
-        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.7.0"),
+        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.7.1"),
         h("div",{style:{fontSize:12.5,color:C.sub,fontStyle:"italic"}}, "The important that is placed and the urgent that is done")
       ),
       h("div",{id:"status-bar",style:{color:(status.indexOf("Could not")===0||status.indexOf("failed")>-1)?"#a23":C.faint}}, status),
