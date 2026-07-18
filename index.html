@@ -367,20 +367,26 @@ function generateRecurrence(spec, anchor){
 
   if(unit==="week"){
     // day-of-week selection; interval skips (every N-th week). Anchor's week is week 0.
+    // COUNT MODE COUNTS WEEKS (periods), NOT tasks: "6 times, Mon+Wed" = 6 weeks x 2 days = 12 tasks.
+    // A week only counts toward the total once it actually emits at least one day (so a partial
+    // first week that emits nothing before the anchor doesn't burn an occurrence).
     var days = (spec.days && spec.days.length) ? spec.days.slice().sort(function(a,b){return a-b;}) : [start.getDay()];
-    // walk week-blocks from the start of the anchor's week
     var weekStart = new Date(start); weekStart.setDate(start.getDate() - start.getDay()); // back to Sunday
-    var guard=0;
+    var weeksDone = 0, guard=0;
     while(guard++ < HARD_CAP){
+      var emittedThisWeek = false;
       for(var i=0;i<days.length;i++){
         var d = new Date(weekStart); d.setDate(weekStart.getDate() + days[i]);
         if(d.getTime() < start.getTime()) continue;         // don't emit before the anchor
-        if(wantCount!=null){ if(out.length>=wantCount) return out; }
-        if(!pushIfInRange(d)){ if(endD) return out; }
+        if(!pushIfInRange(d)){ if(endD) return out; }        // date-mode stop
+        emittedThisWeek = true;
+        if(out.length>=HARD_CAP) return out;
       }
-      if(wantCount!=null && out.length>=wantCount) return out;
+      if(emittedThisWeek){
+        weeksDone++;
+        if(wantCount!=null && weeksDone>=wantCount) return out;  // counted enough WEEKS
+      }
       weekStart.setDate(weekStart.getDate() + 7*every);      // skip (every-1)=interval weeks
-      if(out.length>=HARD_CAP) return out;
     }
     return out;
   }
@@ -528,6 +534,8 @@ function TaskForm(props){
   // RECURRENCE (create mode only — an existing instance has no stored pattern to re-edit).
   var s_rep = useState(false), rep=s_rep[0], setRep=s_rep[1];           // "Repeats" on/off
   var s_rEvery = useState(1), rEvery=s_rEvery[0], setREvery=s_rEvery[1];
+  var s_rEveryStr = useState("1"), rEveryStr=s_rEveryStr[0], setREveryStr=s_rEveryStr[1];
+  var s_rCountStr = useState("10"), rCountStr=s_rCountStr[0], setRCountStr=s_rCountStr[1];
   var s_rUnit = useState("week"), rUnit=s_rUnit[0], setRUnit=s_rUnit[1];
   var s_rDays = useState([]), rDays=s_rDays[0], setRDays=s_rDays[1];     // weekly: [0..6], 0=Sun
   var s_rEndMode = useState("count"), rEndMode=s_rEndMode[0], setREndMode=s_rEndMode[1];
@@ -544,8 +552,8 @@ function TaskForm(props){
   function resetFields(){
     setTitle(""); setEffort(2); setPriority(5);
     setShowOn(""); setFireAt(""); setWarn(0); setOpen(false);
-    setRep(false); setREvery(1); setRUnit("week"); setRDays([]);
-    setREndMode("count"); setRCount(10); setREndDate("");
+    setRep(false); setREvery(1); setREveryStr("1"); setRUnit("week"); setRDays([]);
+    setREndMode("count"); setRCount(10); setRCountStr("10"); setREndDate("");
   }
 
   function submit(){
@@ -556,9 +564,11 @@ function TaskForm(props){
       warnMin: showOn && fireAt ? (warn||0) : 0 };
     // Attach the recurrence recipe when Repeats is on (create mode only). The handler runs it.
     if (props.mode!=="edit" && rep){
-      fields.recurrence = { every:rEvery, unit:rUnit,
+      var everyN = Math.max(1, parseInt(rEveryStr,10) || rEvery || 1);
+      var countN = Math.max(1, parseInt(rCountStr,10) || rCount || 1);
+      fields.recurrence = { every:everyN, unit:rUnit,
         days: rUnit==="week" ? rDays.slice() : [],
-        endMode:rEndMode, count:rCount, endDate:rEndDate };
+        endMode:rEndMode, count:countN, endDate:rEndDate };
     }
     var r = props.onSubmit(fields);
     // Clear ONLY once the database entry actually succeeded — a failed save keeps what was typed
@@ -619,7 +629,9 @@ function TaskForm(props){
           // repeat every N unit
           h("div",{style:{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}},
             h("span",{style:{fontSize:12,color:C.sub}}, "Repeat every"),
-            h("input",{type:"number",min:"1",value:String(rEvery),onChange:function(e){ setREvery(Math.max(1,parseInt(e.target.value,10)||1)); },
+            h("input",{type:"number",min:"1",value:rEveryStr,
+              onChange:function(e){ setREveryStr(e.target.value); },
+              onBlur:function(e){ var n=Math.max(1,parseInt(e.target.value,10)||1); setREvery(n); setREveryStr(String(n)); },
               style:{width:56,border:"1px solid "+C.panelEdge,borderRadius:3,padding:"6px 8px",fontSize:13,fontFamily:"inherit",color:C.ink}}),
             h("select",{value:rUnit,onChange:function(e){ setRUnit(e.target.value); },
               style:{border:"1px solid "+C.panelEdge,borderRadius:3,padding:"6px 8px",fontSize:13,fontFamily:"inherit",color:C.ink}},
@@ -646,12 +658,14 @@ function TaskForm(props){
             h("div",{style:{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}},
               h("select",{value:rEndMode,onChange:function(e){ setREndMode(e.target.value); },
                 style:{border:"1px solid "+C.panelEdge,borderRadius:3,padding:"6px 8px",fontSize:13,fontFamily:"inherit",color:C.ink}},
-                [["count","after N occurrences"],["date","on date"]].map(function(o){ return h("option",{key:o[0],value:o[0]}, o[1]); })),
+                [["count","after N times"],["date","on date"]].map(function(o){ return h("option",{key:o[0],value:o[0]}, o[1]); })),
               rEndMode==="count"
                 ? h("span",{style:{display:"inline-flex",alignItems:"center",gap:6}},
-                    h("input",{type:"number",min:"1",value:String(rCount),onChange:function(e){ setRCount(Math.max(1,parseInt(e.target.value,10)||1)); },
+                    h("input",{type:"number",min:"1",value:rCountStr,
+                      onChange:function(e){ setRCountStr(e.target.value); },
+                      onBlur:function(e){ var n=Math.max(1,parseInt(e.target.value,10)||1); setRCount(n); setRCountStr(String(n)); },
                       style:{width:60,border:"1px solid "+C.panelEdge,borderRadius:3,padding:"6px 8px",fontSize:13,fontFamily:"inherit",color:C.ink}}),
-                    h("span",{style:{fontSize:12,color:C.sub}}, "occurrences"))
+                    h("span",{style:{fontSize:12,color:C.sub}}, "times"))
                 : h("input",{type:"date",value:rEndDate,onChange:function(e){ setREndDate(e.target.value); },
                     style:{border:"1px solid "+C.panelEdge,borderRadius:3,padding:"6px 8px",fontSize:13,fontFamily:"inherit",color:C.ink}})
             ),
@@ -1031,7 +1045,7 @@ function App() {
       var dates = generateRecurrence(fields.recurrence, anchor);
       if (!dates.length){ setStatus("Recurrence produced no dates — check the settings."); return Promise.resolve(false); }
       var sid = makeSeriesId();
-      setStatus("Saving "+dates.length+" occurrences…");
+      setStatus("Saving "+dates.length+" tasks…");
       // Create sequentially-ish via Promise.all; each instance is an ordinary task carrying seriesId.
       var adds = dates.map(function(ds, i){
         var data = buildTaskData(fields, ds);
@@ -1732,7 +1746,7 @@ function App() {
     eventFormNode(),
     h("header",{style:{maxWidth:640,margin:"0",padding:"max(28px, env(safe-area-inset-top)) 24px 10px"}},
       h("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:8}},
-        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.6.0"),
+        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.6.1"),
         h("div",{style:{fontSize:12.5,color:C.sub,fontStyle:"italic"}}, "The important that is placed and the urgent that is done")
       ),
       h("div",{id:"status-bar",style:{color:(status.indexOf("Could not")===0||status.indexOf("failed")>-1)?"#a23":C.faint}}, status),
