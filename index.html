@@ -759,7 +759,6 @@ function App() {
   // read-only event detail popup: which event and where.
   var s_evpop = useState(null), evPopup = s_evpop[0], setEvPopup = s_evpop[1]; // {id,x,y} or null
   var s_tpop = useState(null), taskPopup = s_tpop[0], setTaskPopup = s_tpop[1]; // read-only task detail {id,x,y}
-  var s_relax = useState(false), relaxMode = s_relax[0], setRelaxMode = s_relax[1]; // Relax view on/off
   // event edit/create form: {mode:"edit"|"create", id?, title,start,end,prep,travel, saving, err} or null
   var s_evform = useState(null), evForm = s_evform[0], setEvForm = s_evform[1];
   // full edit modal: task id being edited, or null. Confirm-delete flag within it.
@@ -1527,8 +1526,6 @@ function App() {
   function relaxView(){
     var kids = [];
     kids.push(h("div",{key:"rhdr",style:{display:"flex",alignItems:"center",gap:10,marginBottom:12}},
-      h("button",{onClick:function(){ setRelaxMode(false); },
-        style:{border:"1px solid "+C.panelEdge,background:"transparent",color:C.sub,borderRadius:5,padding:"6px 12px",fontSize:13,fontWeight:600,cursor:"pointer"}}, "\u2039 Tasks"),
       h("div",{style:{fontSize:16,fontWeight:700,color:C.ink}}, "Relax")
     ));
     kids.push(h("p",{key:"rlead",style:leadStyle}, "Ways to recharge, ranked. Pick one \u2014 finish it like any task."));
@@ -1826,7 +1823,7 @@ function App() {
     );
   }
 
-  var tabBtns = [["foreground","Tasks"],["morning","Morning"],["evening","Evening"]].map(function(pair){
+  var tabBtns = [["foreground","Tasks"],["relax","Relax"],["morning","Morning"],["evening","Evening"]].map(function(pair){
     var k=pair[0], label=pair[1], on=tab===k;
     return h("button",{key:k,onClick:function(){setTab(k);},style:{flex:1,border:"1px solid "+(on?C.amber:C.panelEdge),background:on?C.amberSoft:"transparent",color:on?C.ink:C.sub,borderRadius:2,padding:"9px 6px",fontSize:13,fontWeight:600,cursor:"pointer"}}, label);
   });
@@ -1840,7 +1837,7 @@ function App() {
     eventFormNode(),
     h("header",{style:{maxWidth:640,margin:"0",padding:"max(28px, env(safe-area-inset-top)) 24px 10px"}},
       h("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:8}},
-        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.8.0"),
+        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.8.1"),
         h("div",{style:{fontSize:12.5,color:C.sub,fontStyle:"italic"}}, "The important that is placed and the urgent that is done")
       ),
       h("div",{id:"status-bar",style:{color:(status.indexOf("Could not")===0||status.indexOf("failed")>-1)?"#a23":C.faint}}, status),
@@ -1878,20 +1875,16 @@ function App() {
         (calState==="connected")
           ? h("button",{onClick:openEventCreate,style:{border:"1px solid "+C.good,background:"transparent",color:C.good,borderRadius:5,padding:"5px 11px",fontSize:12,fontWeight:700,cursor:"pointer"}}, "+ Event")
           : null,
-        calMsg ? h("span",{style:{fontSize:11.5,color:calState==="error"?"#a23":C.faint}}, calMsg) : null,
-        h("span",{style:{flex:1}}),
-        h("button",{onClick:function(){ setRelaxMode(true); },
-          style:{border:"1px solid "+C.cold,background:"transparent",color:C.cold,borderRadius:5,padding:"5px 13px",fontSize:12,fontWeight:700,cursor:"pointer"}}, "Relax")
+        calMsg ? h("span",{style:{fontSize:11.5,color:calState==="error"?"#a23":C.faint}}, calMsg) : null
       ),
       h("div",{style:{height:1,background:C.panelEdge}})
     ),
-    relaxMode ? null : h("div",{className:"il-tabs",style:{maxWidth:640,margin:"0",padding:"10px 24px 0",gap:6}}, tabBtns),
+    h("div",{className:"il-tabs",style:{maxWidth:640,margin:"0",padding:"10px 24px 0",gap:6}}, tabBtns),
     h("main",{style:{maxWidth:640,margin:"0",padding:"18px 24px calc(60px + env(safe-area-inset-bottom))"}},
-      relaxMode
-        ? relaxView()
-        : (tab==="morning" ? morningProcess()
-          : tab==="evening" ? eveningProcess()
-          : foreground())
+      tab==="relax" ? relaxView()
+        : tab==="morning" ? morningProcess()
+        : tab==="evening" ? eveningProcess()
+        : foreground()
     )
   );
 }
