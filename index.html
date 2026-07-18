@@ -419,6 +419,7 @@ function readTask(row) {
     effort: clampEffort(typeof d.effort === "number" ? d.effort : 2),
     note: d.note || "",
     done: !!d.done,
+    doneAt: d.doneAt || null,            // "YYYY-MM-DD" completion date (null if never/again undone)
     background: !!d.background,
     // prompt fields — all optional; absent = no prompt. showOn gates visibility,
     // fireAt is the Begin moment (a "HH:MM" on the showOn date), warnMin the pre-warning.
@@ -443,7 +444,7 @@ function readAppt(row) {
 function taskToData(t){
   return {
     title: t.title, project: t.project, priority: t.priority, effort: clampEffort(t.effort),
-    note: t.note, background: t.background, done: t.done,
+    note: t.note, background: t.background, done: t.done, doneAt: t.doneAt || null,
     showOn: t.showOn || null, fireAt: t.fireAt || null, warnMin: t.warnMin || 0,
     // preserve recurrence tags through every write, so an edited instance stays part of its series
     seriesId: t.seriesId || null, seriesSlot: (typeof t.seriesSlot==="number"? t.seriesSlot : null)
@@ -738,6 +739,7 @@ function App() {
   var s_pop = useState(null), popup = s_pop[0], setPopup = s_pop[1]; // {id,x,y} or null
   // read-only event detail popup: which event and where.
   var s_evpop = useState(null), evPopup = s_evpop[0], setEvPopup = s_evpop[1]; // {id,x,y} or null
+  var s_tpop = useState(null), taskPopup = s_tpop[0], setTaskPopup = s_tpop[1]; // read-only task detail {id,x,y}
   // event edit/create form: {mode:"edit"|"create", id?, title,start,end,prep,travel, saving, err} or null
   var s_evform = useState(null), evForm = s_evform[0], setEvForm = s_evform[1];
   // full edit modal: task id being edited, or null. Confirm-delete flag within it.
@@ -921,7 +923,11 @@ function App() {
       return t.showOn === viewDate;
     }
     var active = tasks.filter(function(t){return !t.done && !t.background && visible(t);});
-    var done = tasks.filter(function(t){return t.done;});
+    // "So Far" history is bounded to a rolling 3-date window by COMPLETION date (today, yesterday,
+    // day-before). Tasks completed before doneAt existed simply don't show (no fallback — history is
+    // rarely used, not worth scaffolding).
+    var histFloor = shiftDate(todayStr(), -2);
+    var done = tasks.filter(function(t){ return t.done && t.doneAt && t.doneAt >= histFloor; });
     var background = tasks.filter(function(t){return t.background && !t.done && visible(t);});
     var dormant = tasks.filter(function(t){return !t.done && !t.background && !visible(t);});
     active.sort(SORTS[sortKey].fn);
@@ -1082,7 +1088,10 @@ function App() {
   var toggleDone = useCallback(function(id){
     setPopup(null);
     var t = tasks.filter(function(x){return x.id===id;})[0]; if(!t) return;
-    persist(id, { done: !t.done });
+    var nowDone = !t.done;
+    // stamp the completion DATE so "Today, so far" can show a rolling window by completion date
+    // (works for undated tasks too — the common case). Clear it when un-done.
+    persist(id, { done: nowDone, doneAt: nowDone ? todayStr() : null });
   }, [tasks, persist]);
 
   var setPriorityFor = useCallback(function(id, v){ persist(id, { priority:v }); }, [persist]);
@@ -1144,30 +1153,45 @@ function App() {
     if(pressTimer.current){ clearTimeout(pressTimer.current); pressTimer.current=null; }
     pressOrigin.current = null;
   }
+  // Gesture model (tasks AND events):  TAP = look (read-only detail popup);  PRESS-HOLD = act.
+  // For a TASK, the act is the quick priority/edit menu.  For an EVENT, the act is straight-to-edit.
   function pressHandlers(item, kind){
-    function openAt(clientX, clientY){
+    var didHold = { v:false };
+    function openHold(clientX, clientY){
       swallowNextBackdrop.current = true; // the release ending THIS press must not dismiss
-      if(kind==="event"){ setEvPopup({ id:item.id, x:clientX, y:clientY }); }
-      else { setPopup({ id:item.id, x:clientX, y:clientY }); }
+      if(kind==="event"){ openEventEdit(item.id); }          // EVENT hold → straight to edit
+      else { setPopup({ id:item.id, x:clientX, y:clientY }); } // TASK hold → quick priority/edit menu
+    }
+    function openTap(clientX, clientY){
+      swallowNextBackdrop.current = true;
+      if(kind==="event"){ setEvPopup({ id:item.id, x:clientX, y:clientY }); }   // EVENT tap → detail
+      else { setTaskPopup({ id:item.id, x:clientX, y:clientY }); }               // TASK tap → detail
     }
     return {
       onPointerDown:function(e){
         if(e.button && e.button!==0) return;
         var x=e.clientX, y=e.clientY, pid=e.pointerId;
         pressOrigin.current = { x:x, y:y, pointerId:pid };
+        didHold.v = false;
         clearTimeout(pressTimer.current);
         pressTimer.current = setTimeout(function(){
           pressTimer.current = null;
-          openAt(x, y);
+          didHold.v = true;               // mark: this gesture became a hold
+          openHold(x, y);
         }, 480);
       },
       onPointerMove:function(e){
         var o = pressOrigin.current; if(!o) return;
         if(Math.abs(e.clientX-o.x) > MOVE_SLOP || Math.abs(e.clientY-o.y) > MOVE_SLOP){ clearPress(); }
       },
-      onPointerUp:clearPress,
+      onPointerUp:function(e){
+        // If the hold timer never fired, this was a TAP → open the detail popup.
+        if(pressTimer.current){ clearTimeout(pressTimer.current); pressTimer.current=null;
+          if(!didHold.v){ openTap(e.clientX, e.clientY); } }
+        pressOrigin.current = null;
+      },
       onPointerCancel:clearPress,
-      onContextMenu:function(e){ e.preventDefault(); openAt(e.clientX, e.clientY); }
+      onContextMenu:function(e){ e.preventDefault(); openHold(e.clientX, e.clientY); }
     };
   }
   // Single TAP opens the read-only event detail popup (handler inlined on each event segment).
@@ -1332,10 +1356,11 @@ function App() {
         segs.forEach(function(sg,si){
           var segTop = Math.max(0,yOf(sg.a)), segH = Math.max(13,(sg.b-sg.a)*PX_PER_MIN-1);
           canvasKids.push(
-            h("div",Object.assign({key:(it.id||"a"+i)+"-"+si,onClick:function(e){ e.stopPropagation(); swallowNextBackdrop.current=true; setEvPopup({ id:it.id, x:e.clientX, y:e.clientY }); },
+            h("div",Object.assign({key:(it.id||"a"+i)+"-"+si,
               style:{position:"absolute",left:colLeftCss,width:colWidthCss,top:segTop,height:segH,cursor:"pointer",
               background:sg.bg,border:"1px solid "+sg.edge,borderRadius:5,padding:"2px 8px",overflow:"hidden",boxSizing:"border-box",
-              outline:sg.active?("2px solid "+C.amber):"none"}}),
+              WebkitUserSelect:"none",userSelect:"none",touchAction:"pan-y",
+              outline:sg.active?("2px solid "+C.amber):"none"}}, pressHandlers(it,"event")),
               h("div",{style:{fontSize:10,letterSpacing:.4,textTransform:"uppercase",color:sg.ink,fontWeight:700,
                 textShadow:sg.solid?"0 1px 1px rgba(0,0,0,0.25)":"none"}},
                 sg.solid ? (sg.active?"Now · ":"")+"" : sg.lab),
@@ -1346,7 +1371,7 @@ function App() {
         });
       } else {
         var sw = prioritySwatch(it.priority);
-        var ph = pressHandlers(it);
+        var ph = pressHandlers(it,"task");
         var bh = Math.max(13,(it.endMin-it.startMin)*PX_PER_MIN-1);
         canvasKids.push(
           h("div",Object.assign({key:it.id||("t"+i),style:{position:"absolute",left:50,right:6,top:top,height:bh,
@@ -1398,7 +1423,7 @@ function App() {
         h("span",{style:{flex:1,height:1,background:C.panelEdge}})) ];
       unfittedItems.forEach(function(it,i){
         var sw = prioritySwatch(it.priority);
-        var ph = pressHandlers(it);
+        var ph = pressHandlers(it,"task");
         ofKids.push(
           h("div",Object.assign({key:it.id||("u"+i),style:{border:"1px dashed "+sw.color,borderLeft:"5px solid "+sw.color,
             background:C.panel,borderRadius:3,padding:"9px 12px",marginBottom:8,display:"flex",gap:10,alignItems:"flex-start",
@@ -1627,6 +1652,42 @@ function App() {
     );
   }
 
+  // TASK read-only detail popup (TAP). Mirrors the event detail: full expandable title + fields +
+  // an Edit button. The quick priority/edit menu (popupNode) is the PRESS-HOLD gesture instead.
+  function taskDetailNode(){
+    if(!taskPopup) return null;
+    var t = tasks.filter(function(x){return x.id===taskPopup.id;})[0];
+    if(!t) return null;
+    var vw = (typeof window!=="undefined") ? window.innerWidth : 380;
+    var vh = (typeof window!=="undefined") ? window.innerHeight : 700;
+    var W = 280;
+    var x = Math.min(taskPopup.x, vw - W - 10); if(x<10) x=10;
+    var y = Math.min(taskPopup.y, vh - 200); if(y<10) y=10;
+    var sw = prioritySwatch(t.priority);
+    var rows = [];
+    // full title — wraps and expands as needed (no truncation, unlike the canvas chip)
+    rows.push(h("div",{key:"t",style:{fontSize:15,fontWeight:700,color:C.ink,marginBottom:6,lineHeight:1.3,whiteSpace:"pre-wrap",wordBreak:"break-word"}}, t.title));
+    var meta = [];
+    meta.push(h("span",{key:"pri",style:{display:"inline-flex",alignItems:"center",gap:5,fontSize:12.5,color:C.sub}},
+      h("span",{style:{width:9,height:9,borderRadius:2,background:sw.color,display:"inline-block"}}), "priority "+t.priority));
+    meta.push(h("span",{key:"eff",style:{fontSize:12.5,color:C.sub}}, "effort \u2248"+minToLabel(SPOON_MIN[t.effort])));
+    rows.push(h("div",{key:"m",style:{display:"flex",gap:12,flexWrap:"wrap",alignItems:"center",marginBottom:2}}, meta));
+    if(t.showOn){ rows.push(h("div",{key:"so",style:{fontSize:12.5,color:C.sub,marginTop:4}}, "shows on "+t.showOn + (t.fireAt?(" \u00b7 fires "+t.fireAt+(t.warnMin?(" (\u2212"+t.warnMin+"m)"):"")):""))); }
+    if(t.seriesId){ rows.push(h("div",{key:"sr",style:{fontSize:11.5,color:C.faint,marginTop:4,fontStyle:"italic"}}, "part of a recurring series")); }
+    if(t.background){ rows.push(h("div",{key:"bg",style:{fontSize:11.5,color:C.faint,marginTop:4}}, "background work")); }
+    rows.push(h("button",{key:"editbtn",onClick:function(e){ e.stopPropagation(); setTaskPopup(null); openEditor(t.id); },
+      style:{marginTop:12,border:"1px solid "+C.panelEdge,background:C.paper,borderRadius:5,padding:"7px 13px",
+        fontSize:13,fontWeight:600,color:C.ink,cursor:"pointer",width:"100%"}}, "Edit"));
+    function bd(e){ if(swallowNextBackdrop.current){ swallowNextBackdrop.current=false; return; } setTaskPopup(null); }
+    return h("div",{key:"tdbackdrop",onPointerDown:bd,onContextMenu:function(e){e.preventDefault();bd(e);},
+        style:{position:"fixed",inset:0,zIndex:50,background:"rgba(28,31,38,0.04)"}},
+      h("div",{onPointerDown:function(e){e.stopPropagation();},
+        style:{position:"fixed",left:x,top:y,zIndex:51,width:W,background:C.panel,border:"1px solid "+C.panelEdge,
+          borderRadius:8,padding:"12px 14px",boxShadow:"0 8px 28px rgba(28,31,38,0.18)"}},
+        rows)
+    );
+  }
+
   function popupNode(){
     if(!popup) return null;
     var task = tasks.filter(function(x){return x.id===popup.id;})[0];
@@ -1743,10 +1804,11 @@ function App() {
     editModalNode(),
     popupNode(),
     eventPopupNode(),
+    taskDetailNode(),
     eventFormNode(),
     h("header",{style:{maxWidth:640,margin:"0",padding:"max(28px, env(safe-area-inset-top)) 24px 10px"}},
       h("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:8}},
-        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.6.1"),
+        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.7.0"),
         h("div",{style:{fontSize:12.5,color:C.sub,fontStyle:"italic"}}, "The important that is placed and the urgent that is done")
       ),
       h("div",{id:"status-bar",style:{color:(status.indexOf("Could not")===0||status.indexOf("failed")>-1)?"#a23":C.faint}}, status),
