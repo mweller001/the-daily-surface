@@ -420,7 +420,8 @@ function readTask(row) {
     note: d.note || "",
     done: !!d.done,
     doneAt: d.doneAt || null,            // "YYYY-MM-DD" completion date (null if never/again undone)
-    background: !!d.background,
+    itemKind: d.itemKind || "task",      // "task" | "relax" — relax = a light task, no scheduling
+    background: !!d.background,           // legacy; no longer used (background concept removed)
     // prompt fields — all optional; absent = no prompt. showOn gates visibility,
     // fireAt is the Begin moment (a "HH:MM" on the showOn date), warnMin the pre-warning.
     showOn: d.showOn || null,            // "YYYY-MM-DD" or null
@@ -445,6 +446,7 @@ function taskToData(t){
   return {
     title: t.title, project: t.project, priority: t.priority, effort: clampEffort(t.effort),
     note: t.note, background: t.background, done: t.done, doneAt: t.doneAt || null,
+    itemKind: t.itemKind || "task",
     showOn: t.showOn || null, fireAt: t.fireAt || null, warnMin: t.warnMin || 0,
     // preserve recurrence tags through every write, so an edited instance stays part of its series
     seriesId: t.seriesId || null, seriesSlot: (typeof t.seriesSlot==="number"? t.seriesSlot : null)
@@ -563,6 +565,7 @@ function TaskForm(props){
     var fields = { title:t, effort:clampEffort(effort), priority:priority,
       showOn: showOn || null, fireAt: showOn && fireAt ? fireAt : null,
       warnMin: showOn && fireAt ? (warn||0) : 0 };
+    if (props.relax){ fields.itemKind = "relax"; }   // relax capture → tag the item
     // Attach the recurrence recipe when Repeats is on (create mode only). The handler runs it.
     if (props.mode!=="edit" && rep){
       var everyN = Math.max(1, parseInt(rEveryStr,10) || rEvery || 1);
@@ -591,7 +594,8 @@ function TaskForm(props){
   var effHint = effort>=MAX_SPOON ? "≈60+ · decompose?" : "≈"+minToLabel(SPOON_MIN[effort]);
   var disabledTime = !showOn, disabledWarn = !showOn || !fireAt;
 
-  var promptRows = [
+  // Relax items are NOT time-anchored — no prompt/scheduling drawer in a relax capture.
+  var promptRows = props.relax ? [] : [
     h("button",{key:"ptoggle",onClick:function(){ setOpen(!open); },
       style:{background:"none",border:"none",padding:0,marginTop:12,cursor:"pointer",fontSize:12,color:C.cold,fontWeight:600}},
       (open?"− prompt":"+ prompt") + (showOn && !open ? " · set" : ""))
@@ -618,7 +622,7 @@ function TaskForm(props){
 
   // RECURRENCE UI — create mode only. "Repeats" toggle → custom recipe form.
   var repRows = [];
-  if (props.mode!=="edit"){
+  if (props.mode!=="edit" && !props.relax){
     repRows.push(
       h("button",{key:"rtoggle",onClick:function(){ setRep(!rep); },
         style:{background:"none",border:"none",padding:0,marginTop:12,cursor:"pointer",fontSize:12,color:C.cold,fontWeight:600}},
@@ -755,6 +759,7 @@ function App() {
   // read-only event detail popup: which event and where.
   var s_evpop = useState(null), evPopup = s_evpop[0], setEvPopup = s_evpop[1]; // {id,x,y} or null
   var s_tpop = useState(null), taskPopup = s_tpop[0], setTaskPopup = s_tpop[1]; // read-only task detail {id,x,y}
+  var s_relax = useState(false), relaxMode = s_relax[0], setRelaxMode = s_relax[1]; // Relax view on/off
   // event edit/create form: {mode:"edit"|"create", id?, title,start,end,prep,travel, saving, err} or null
   var s_evform = useState(null), evForm = s_evform[0], setEvForm = s_evform[1];
   // full edit modal: task id being edited, or null. Confirm-delete flag within it.
@@ -937,22 +942,22 @@ function App() {
       if (isToday) return !t.showOn || t.showOn <= today;
       return t.showOn === viewDate;
     }
-    var active = tasks.filter(function(t){return !t.done && !t.background && visible(t);});
-    // "So Far" history is bounded to a rolling 3-date window by COMPLETION date (today, yesterday,
-    // day-before). Tasks completed before doneAt existed simply don't show (no fallback — history is
-    // rarely used, not worth scaffolding).
+    // TASK-kind items are scheduled (date-gated). RELAX-kind items are light tasks with no
+    // scheduling — they only appear in the Relax view, sorted by priority.
+    function isTask(t){ return (t.itemKind||"task")==="task"; }
+    function isRelax(t){ return t.itemKind==="relax"; }
+    var active = tasks.filter(function(t){return !t.done && isTask(t) && visible(t);});
+    // "So Far" history: rolling 3-date window by COMPLETION date. Includes completed relax items
+    // (a completed recharge counts as "done today"). Items completed before doneAt existed don't show.
     var histFloor = shiftDate(todayStr(), -2);
     var done = tasks.filter(function(t){ return t.done && t.doneAt && t.doneAt >= histFloor; });
-    var background = tasks.filter(function(t){return t.background && !t.done && visible(t);});
-    var dormant = tasks.filter(function(t){return !t.done && !t.background && !visible(t);});
+    // Relax items: undone, sorted by priority (highest first). No date gate.
+    var relax = tasks.filter(function(t){ return !t.done && isRelax(t); });
+    relax.sort(function(a,b){ return b.priority - a.priority; });
+    var dormant = tasks.filter(function(t){return !t.done && isTask(t) && !visible(t);});
     active.sort(SORTS[sortKey].fn);
-    return { active:active, done:done, background:background, dormant:dormant };
+    return { active:active, done:done, relax:relax, dormant:dormant };
   }, [tasks, sortKey, packFromMin, isToday, viewDate]);
-
-  var topBackground = useMemo(function(){
-    var bgs = sorted.background.slice().sort(function(a,b){return b.priority-a.priority;});
-    return bgs[0] || null;
-  }, [sorted.background]);
 
   // COMPOSE: tasks (sorted, no times) + events (fixed times) → rail.
   // Re-runs on sort change / add / delete / edit (via sorted.active) and on appts / nowMin.
@@ -1054,6 +1059,7 @@ function App() {
   // Build the base data object shared by a single task and every recurrence instance.
   function buildTaskData(fields, showOnOverride){
     var d = { title:fields.title, project:"—", priority:fields.priority, effort:clampEffort(fields.effort), done:false };
+    if (fields.itemKind){ d.itemKind = fields.itemKind; }
     var so = showOnOverride!==undefined ? showOnOverride : fields.showOn;
     if (so){ d.showOn = so; if(fields.fireAt){ d.fireAt = fields.fireAt; d.warnMin = fields.warnMin||0; } }
     return d;
@@ -1467,18 +1473,6 @@ function App() {
       children.push(h("div",{key:"empty",style:{fontSize:13,color:C.faint,fontStyle:"italic",padding:"10px 2px"}}, "Nothing scheduled ahead. Capture something below."));
     }
 
-    if (topBackground){
-      children.push(
-        h("div",{key:"bgfoot",style:{marginTop:10,border:"1px dashed "+C.cold,background:"rgba(91,111,140,0.06)",borderRadius:3,padding:"9px 12px",display:"flex",gap:10,alignItems:"center"}},
-          h("span",{style:{fontSize:9.5,letterSpacing:1,textTransform:"uppercase",color:C.cold,fontWeight:700}}, "If a gap opens"),
-          h("div",{style:{flex:1}},
-            h("div",{style:{fontSize:13,color:C.ink,fontWeight:500}}, topBackground.title),
-            h("div",{style:{fontSize:10.5,color:C.cold}}, "default interstitial work · not a foreground task")
-          )
-        )
-      );
-    }
-
     var sortBtns = Object.keys(SORTS).map(function(k){
       var on = k===sortKey, sdef = SORTS[k];
       return h("button",{key:k,onClick:function(){setSortKey(k);},style:{border:"1px solid "+(on?C.amber:C.panelEdge),background:on?C.amberSoft:"transparent",color:on?C.ink:C.sub,borderRadius:2,padding:"6px 10px",cursor:"pointer",textAlign:"left",lineHeight:1.15}},
@@ -1528,27 +1522,43 @@ function App() {
     return h("section",null, children);
   }
 
-  function background(){
-    var kids = [ eyebrow("II","Background"),
-      h("p",{key:"lead",style:leadStyle}, "What the scout is ranging on. Set, not nagged — and the same thing as interstitial work.") ];
-    if (sorted.background.length===0){
-      kids.push(h("div",{key:"empty",style:{fontSize:12.5,color:C.faint,fontStyle:"italic"}}, "No background work set. (Capture a task and mark it background.)"));
+  // RELAX VIEW — a simplified list of relax-kind items: priority-colored, spoon-weighted,
+  // completable, tap-for-detail, press-hold-to-edit. NO time canvas, now-bar, or scheduling.
+  function relaxView(){
+    var kids = [];
+    kids.push(h("div",{key:"rhdr",style:{display:"flex",alignItems:"center",gap:10,marginBottom:12}},
+      h("button",{onClick:function(){ setRelaxMode(false); },
+        style:{border:"1px solid "+C.panelEdge,background:"transparent",color:C.sub,borderRadius:5,padding:"6px 12px",fontSize:13,fontWeight:600,cursor:"pointer"}}, "\u2039 Tasks"),
+      h("div",{style:{fontSize:16,fontWeight:700,color:C.ink}}, "Relax")
+    ));
+    kids.push(h("p",{key:"rlead",style:leadStyle}, "Ways to recharge, ranked. Pick one \u2014 finish it like any task."));
+    var items = sorted.relax;
+    if (!items.length){
+      kids.push(h("div",{key:"rempty",style:{fontSize:12.5,color:C.faint,fontStyle:"italic",marginBottom:14}}, "No relax options yet. Capture one below."));
     }
-    sorted.background.forEach(function(b){
-      kids.push(h("div",{key:b.id,style:{border:"1px solid "+C.panelEdge,borderRadius:3,padding:"12px 14px",marginBottom:10,background:C.panel}},
-        h("div",{style:{fontSize:14,fontWeight:500,color:C.ink,lineHeight:1.35}}, b.title),
-        b.note ? h("div",{style:{fontSize:12,color:C.faint,marginTop:6,lineHeight:1.45}}, b.note) : null
-      ));
+    items.forEach(function(it){
+      var ph = pressHandlers(it,"task");   // same gesture model: tap=detail, hold=quick menu
+      var sw = prioritySwatch(it.priority);
+      kids.push(
+        h("div",Object.assign({key:it.id,style:{display:"flex",gap:12,alignItems:"center",marginBottom:10,
+          border:"1px solid "+C.panelEdge,borderRadius:5,padding:"11px 13px",background:C.panel,cursor:"pointer",
+          WebkitUserSelect:"none",userSelect:"none",touchAction:"pan-y"}}, ph),
+          h("button",{onClick:function(e){e.stopPropagation();toggleDone(it.id);},
+            onPointerDown:function(e){e.stopPropagation();},
+            onPointerUp:function(e){e.stopPropagation();},
+            "aria-label":"mark done",
+            style:{width:20,height:20,flexShrink:0,borderRadius:4,border:"2px solid "+C.line,background:"transparent",cursor:"pointer"}}),
+          h("span",{style:{width:10,height:10,borderRadius:3,background:sw.color,flexShrink:0}}),
+          h("div",{style:{flex:1,fontSize:14,fontWeight:500,color:C.ink,lineHeight:1.3}}, it.title),
+          h("div",{style:{display:"flex",gap:3,flexShrink:0}}, spoonDots(it.effort, C.faint))
+        )
+      );
     });
+    // Capture (relax-kind) — the same TaskForm, but a relax capture (no scheduling fields shown).
+    kids.push(h("div",{key:"rcap",style:{marginTop:16,paddingTop:14,borderTop:"1px dashed "+C.panelEdge}},
+      h(TaskForm,{ mode:"capture", relax:true, initial:{}, onSubmit:submitNewTask })
+    ));
     return h("section",null,kids);
-  }
-
-  function relaxation(){
-    return h("section",null,
-      eyebrow("III","Relaxation"),
-      h("p",{style:leadStyle}, "Restoration, curated to mode and guarded against the pull-you-deeper default."),
-      h("div",{style:{fontSize:12.5,color:C.faint,fontStyle:"italic"}}, "The curation surface lands here. (Stocking the gap-restoration set is its own task.)")
-    );
   }
 
   // ---- Process reference panels (static-but-structured; stage-1 reference, migrates to instrumented) ----
@@ -1696,7 +1706,6 @@ function App() {
     rows.push(h("div",{key:"m",style:{display:"flex",gap:12,flexWrap:"wrap",alignItems:"center",marginBottom:2}}, meta));
     if(t.showOn){ rows.push(h("div",{key:"so",style:{fontSize:12.5,color:C.sub,marginTop:4}}, "shows on "+t.showOn + (t.fireAt?(" \u00b7 fires "+t.fireAt+(t.warnMin?(" (\u2212"+t.warnMin+"m)"):"")):""))); }
     if(t.seriesId){ rows.push(h("div",{key:"sr",style:{fontSize:11.5,color:C.faint,marginTop:4,fontStyle:"italic"}}, "part of a recurring series")); }
-    if(t.background){ rows.push(h("div",{key:"bg",style:{fontSize:11.5,color:C.faint,marginTop:4}}, "background work")); }
     rows.push(h("button",{key:"editbtn",onClick:function(e){ e.stopPropagation(); setTaskPopup(null); openEditor(t.id); },
       style:{marginTop:12,border:"1px solid "+C.panelEdge,background:C.paper,borderRadius:5,padding:"7px 13px",
         fontSize:13,fontWeight:600,color:C.ink,cursor:"pointer",width:"100%"}}, "Edit"));
@@ -1817,7 +1826,7 @@ function App() {
     );
   }
 
-  var tabBtns = [["foreground","Fore"],["background","Back"],["relaxation","Relax"],["morning","Morn"],["evening","Eve"]].map(function(pair){
+  var tabBtns = [["foreground","Tasks"],["morning","Morning"],["evening","Evening"]].map(function(pair){
     var k=pair[0], label=pair[1], on=tab===k;
     return h("button",{key:k,onClick:function(){setTab(k);},style:{flex:1,border:"1px solid "+(on?C.amber:C.panelEdge),background:on?C.amberSoft:"transparent",color:on?C.ink:C.sub,borderRadius:2,padding:"9px 6px",fontSize:13,fontWeight:600,cursor:"pointer"}}, label);
   });
@@ -1831,7 +1840,7 @@ function App() {
     eventFormNode(),
     h("header",{style:{maxWidth:640,margin:"0",padding:"max(28px, env(safe-area-inset-top)) 24px 10px"}},
       h("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:8}},
-        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.7.1"),
+        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.8.0"),
         h("div",{style:{fontSize:12.5,color:C.sub,fontStyle:"italic"}}, "The important that is placed and the urgent that is done")
       ),
       h("div",{id:"status-bar",style:{color:(status.indexOf("Could not")===0||status.indexOf("failed")>-1)?"#a23":C.faint}}, status),
@@ -1869,19 +1878,20 @@ function App() {
         (calState==="connected")
           ? h("button",{onClick:openEventCreate,style:{border:"1px solid "+C.good,background:"transparent",color:C.good,borderRadius:5,padding:"5px 11px",fontSize:12,fontWeight:700,cursor:"pointer"}}, "+ Event")
           : null,
-        calMsg ? h("span",{style:{fontSize:11.5,color:calState==="error"?"#a23":C.faint}}, calMsg) : null
+        calMsg ? h("span",{style:{fontSize:11.5,color:calState==="error"?"#a23":C.faint}}, calMsg) : null,
+        h("span",{style:{flex:1}}),
+        h("button",{onClick:function(){ setRelaxMode(true); },
+          style:{border:"1px solid "+C.cold,background:"transparent",color:C.cold,borderRadius:5,padding:"5px 13px",fontSize:12,fontWeight:700,cursor:"pointer"}}, "Relax")
       ),
       h("div",{style:{height:1,background:C.panelEdge}})
     ),
-    h("div",{className:"il-tabs",style:{maxWidth:640,margin:"0",padding:"10px 24px 0",gap:6}}, tabBtns),
+    relaxMode ? null : h("div",{className:"il-tabs",style:{maxWidth:640,margin:"0",padding:"10px 24px 0",gap:6}}, tabBtns),
     h("main",{style:{maxWidth:640,margin:"0",padding:"18px 24px calc(60px + env(safe-area-inset-bottom))"}},
-      (tab==="morning" || tab==="evening")
-        ? (tab==="morning" ? morningProcess() : eveningProcess())
-        : h("div",{className:"il-cols"},
-            h("section",{className:tab==="foreground"?"il-active":""}, foreground()),
-            h("section",{className:tab==="background"?"il-active":""}, background()),
-            h("section",{className:tab==="relaxation"?"il-active":""}, relaxation())
-          )
+      relaxMode
+        ? relaxView()
+        : (tab==="morning" ? morningProcess()
+          : tab==="evening" ? eveningProcess()
+          : foreground())
     )
   );
 }
