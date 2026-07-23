@@ -1,0 +1,680 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#f3f1ec" />
+<title>PPG — My Intentional Life</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin:0; padding:0; }
+  body { background:#f3f1ec; color:#1c1f26;
+         font-family: system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+         -webkit-text-size-adjust:100%; -webkit-tap-highlight-color:transparent; }
+  @media (prefers-reduced-motion: reduce) { * { transition:none !important; } }
+  button:focus-visible, input:focus-visible, select:focus-visible { outline:2px solid #c8741a; outline-offset:2px; }
+  input, select { font-size:16px; }
+  .noselect { -webkit-user-select:none; user-select:none; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+
+<script>
+"use strict";
+/* ============================================================
+   PPG v0.3 — the card deck (Program / Project / Goal)
+   Part of VRPPG, the third project under My Intentional Life.
+
+   REBUILT on the corrected architecture (July 20 verification pass).
+   The v0.2 files are reference only; the underlying assumptions changed.
+
+     - ONE card container, driven by a per-kind KINDSPEC
+     - ONE editor form, parameterised by (initial values, save handler),
+       reused for ADD and EDIT at every level, fields from the kindSpec
+     - ROOT = the hub: capture + a scan of ACTIVE programs and projects
+     - Cards show CONTAINMENT PARENT ONLY (no mesh; that is VRP's job)
+     - Gestures: tap-descend, swipe siblings/parent, hold-to-edit
+
+   Out of scope by decision: archive / restore / delete (design kept in
+   the notes, build not planned); tasks and events (leaves, deferred).
+   ============================================================ */
+
+var SUPABASE_URL = "https://vjkuksmwycnklkfpngtq.supabase.co";
+var SUPABASE_KEY = "sb_publishable_2gnanut8Zvt6cyt8BBCUfw_e4ZU81YA";
+var db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+var h = React.createElement;
+var useState = React.useState, useEffect = React.useEffect,
+    useCallback = React.useCallback, useMemo = React.useMemo, useRef = React.useRef;
+
+/* ---------- palette (matches The Daily Surface) ---------- */
+var C = {
+  bg:"#f3f1ec", card:"#fbfaf7", ink:"#1c1f26", sub:"#6b6f76",
+  line:"#e2ddd2", accent:"#c8741a", accentInk:"#8a4e10", green:"#1CAC78"
+};
+
+/* ---------- the one shared temperature scale ----------
+   The cold end (2,1,0) was planned from the first layout; the warm
+   gaps 4/6/8 are reserved-but-dormant contingency, not anticipated. */
+var PRIORITY = [
+  { v:9, key:"red",    color:"#e02a1f", label:"Red - hot" },
+  { v:7, key:"orange", color:"#f57b13", label:"Orange" },
+  { v:5, key:"yellow", color:"#f4c20d", label:"Yellow" },
+  { v:3, key:"beige",  color:"#cdab7e", label:"Beige" },
+  { v:2, key:"dblue",  color:"#2f5aa8", label:"Dark blue - cold" },
+  { v:1, key:"lblue",  color:"#8fc2ea", label:"Light blue - freezing" },
+  { v:0, key:"white",  color:"#f2f4f7", label:"White - frozen" }
+];
+var DEFAULT_PRIORITY = 5;   /* new items land WARM; you deliberately cool what is on hold */
+
+function prioritySwatch(p){
+  var best = PRIORITY[PRIORITY.length-1];
+  for (var i=0;i<PRIORITY.length;i++){ if(p>=PRIORITY[i].v){ best=PRIORITY[i]; break; } }
+  return best;
+}
+function tempColor(p){ return prioritySwatch(p).color; }
+
+/* ============================================================
+   DATA LAYER - schema-light, shared `items` table
+   ============================================================ */
+var Store = {
+  loadAll: function(){
+    return db.from("items").select("*").then(function(r){ if(r.error) throw r.error; return r.data||[]; });
+  },
+  add: function(kind, data){
+    return db.from("items").insert([{ kind:kind, data:data }]).select().then(function(r){
+      if(r.error) throw r.error; return r.data[0]; });
+  },
+  update: function(id, data){
+    return db.from("items").update({ data:data }).eq("id",id).select().then(function(r){
+      if(r.error) throw r.error; return r.data[0]; });
+  }
+};
+
+/* ============================================================
+   THE KINDSPEC - one descriptor per kind.
+   Card rendering, editor fields and navigation all read from here.
+   Adding a behaviour is one line per kind, not five scattered ifs.
+   ============================================================ */
+var KINDS = {
+  program: {
+    kind:"program", label:"program", plural:"programs",
+    childKind:"project", parentKind:null, parentField:null,
+    read: function(row){ var d=row.data||{}; return {
+      id:row.id, kind:"program",
+      name: d.name || "(untitled program)",
+      priority: typeof d.priority==="number" ? d.priority : DEFAULT_PRIORITY,
+      roleIds: Array.isArray(d.roleIds) ? d.roleIds : []
+    }; },
+    write: function(o){ return { name:o.name, priority:o.priority, roleIds:o.roleIds||[] }; },
+    fields:[
+      { key:"name",     type:"text", label:"Program name", placeholder:"an umbrella over projects" },
+      { key:"priority", type:"temp", label:"Priority / temperature" }
+    ]
+  },
+  project: {
+    kind:"project", label:"project", plural:"projects",
+    childKind:"goal", parentKind:"program", parentField:"programId",
+    read: function(row){ var d=row.data||{}; return {
+      id:row.id, kind:"project",
+      name: d.name || "(untitled project)",
+      priority: typeof d.priority==="number" ? d.priority : DEFAULT_PRIORITY,
+      programId: d.programId || null,
+      roleIds: Array.isArray(d.roleIds) ? d.roleIds : []
+    }; },
+    write: function(o){ return { name:o.name, priority:o.priority,
+      programId:o.programId||null, roleIds:o.roleIds||[] }; },
+    fields:[
+      { key:"name",      type:"text",    label:"Project name", placeholder:"a project" },
+      { key:"priority",  type:"temp",    label:"Priority / temperature" },
+      { key:"programId", type:"program", label:"Program" }
+    ]
+  },
+  goal: {
+    kind:"goal", label:"goal", plural:"goals",
+    childKind:"task", parentKind:"project", parentField:"projectId",
+    read: function(row){ var d=row.data||{}; return {
+      id:row.id, kind:"goal",
+      name: d.name || "(untitled goal)",
+      priority: typeof d.priority==="number" ? d.priority : DEFAULT_PRIORITY,
+      projectId: d.projectId || null,
+      isDefault: !!d.isDefault
+    }; },
+    write: function(o){ return { name:o.name, priority:o.priority,
+      projectId:o.projectId||null, isDefault:!!o.isDefault }; },
+    fields:[
+      { key:"name",      type:"text",    label:"Goal name", placeholder:"a goal under this project" },
+      { key:"priority",  type:"temp",    label:"Priority / temperature" },
+      { key:"projectId", type:"project", label:"Under project", secondary:true }
+    ]
+  }
+};
+var TREE_ORDER = ["program","project","goal"];
+
+/* ============================================================
+   SMALL SHARED UI
+   ============================================================ */
+function tempDot(p, size){
+  size = size || 12;
+  return h("span",{ title:prioritySwatch(p).label,
+    style:{ width:size, height:size, borderRadius:size, background:tempColor(p),
+            border:"1px solid "+C.line, display:"inline-block", flex:"0 0 auto" }});
+}
+function fieldLabel(t){ return h("div",{style:{fontSize:12,color:C.sub,marginBottom:4,marginTop:10}}, t); }
+function swatchRow(sel, onPick){
+  return h("div",{style:{display:"flex",gap:6,flexWrap:"wrap"}},
+    PRIORITY.map(function(p){
+      var on = p.v===sel, faint = (p.key==="white");
+      return h("button",{ key:p.key, title:p.label, "aria-label":"priority "+p.label,
+        onClick:function(e){ e.stopPropagation(); onPick(p.v); },
+        style:{ width:26,height:26,borderRadius:5,cursor:"pointer",background:p.color,
+                border: on ? "2px solid "+C.ink : (faint ? "2px solid "+C.line : "2px solid transparent"),
+                boxShadow: on ? "0 0 0 1px #fff inset" : "none",
+                transform: on ? "scale(1.08)" : "none", transition:"transform .08s" }});
+    }));
+}
+
+/* ============================================================
+   GESTURES
+   Attached to the card body only; the children list keeps its scroll.
+     movement past tolerance -> swipe (cancels a pending hold)
+     still past HOLD_MS      -> hold fires, suppressing the trailing lift
+   ============================================================ */
+var SWIPE_THRESH = 40, HOLD_MS = 500, MOVE_TOLERANCE = 12;
+
+function useGestures(opts){
+  var st = useRef({ x:0,y:0,t:0,timer:null,held:false,moved:false,active:false });
+  function clearTimer(){ if(st.current.timer){ clearTimeout(st.current.timer); st.current.timer=null; } }
+  function start(e){
+    var p = (e.touches && e.touches[0]) || e;
+    st.current.x=p.clientX; st.current.y=p.clientY; st.current.t=Date.now();
+    st.current.held=false; st.current.moved=false; st.current.active=true;
+    clearTimer();
+    if(opts.onHold){
+      st.current.timer = setTimeout(function(){
+        if(st.current.active && !st.current.moved){ st.current.held=true; opts.onHold(); }
+      }, HOLD_MS);
+    }
+  }
+  function move(e){
+    if(!st.current.active) return;
+    var p = (e.touches && e.touches[0]) || e;
+    if(Math.abs(p.clientX-st.current.x) > MOVE_TOLERANCE ||
+       Math.abs(p.clientY-st.current.y) > MOVE_TOLERANCE){
+      st.current.moved = true; clearTimer();
+    }
+  }
+  function end(e){
+    clearTimer();
+    if(!st.current.active) return;
+    st.current.active = false;
+    if(st.current.held) return;
+    var p = (e.changedTouches && e.changedTouches[0]) || e;
+    var dx = p.clientX-st.current.x, dy = p.clientY-st.current.y;
+    var ax = Math.abs(dx), ay = Math.abs(dy);
+    if(Date.now()-st.current.t > 900) return;
+    if(ax < SWIPE_THRESH && ay < SWIPE_THRESH) return;
+    if(ax > ay){ if(dx < 0){ if(opts.onLeft) opts.onLeft(); } else { if(opts.onRight) opts.onRight(); } }
+    else if(dy < 0){ if(opts.onUp) opts.onUp(); }
+  }
+  function cancel(){ clearTimer(); st.current.active=false; }
+  return { onTouchStart:start, onTouchMove:move, onTouchEnd:end, onTouchCancel:cancel,
+           onMouseDown:start,  onMouseMove:move,  onMouseUp:end,  onMouseLeave:cancel };
+}
+
+/* hold-on-child (PROVISIONAL). Child rows must stop propagation or the
+   card's gesture swallows them - the checkbox-in-container lesson. */
+function useChildHold(onHold, onTap){
+  var st = useRef({ timer:null, held:false, moved:false, x:0, y:0 });
+  function clear(){ if(st.current.timer){ clearTimeout(st.current.timer); st.current.timer=null; } }
+  function start(e){
+    e.stopPropagation();
+    var p=(e.touches&&e.touches[0])||e;
+    st.current.x=p.clientX; st.current.y=p.clientY;
+    st.current.held=false; st.current.moved=false;
+    clear();
+    st.current.timer=setTimeout(function(){
+      if(!st.current.moved){ st.current.held=true; onHold(); }
+    }, HOLD_MS);
+  }
+  function move(e){
+    var p=(e.touches&&e.touches[0])||e;
+    if(Math.abs(p.clientX-st.current.x)>MOVE_TOLERANCE ||
+       Math.abs(p.clientY-st.current.y)>MOVE_TOLERANCE){ st.current.moved=true; clear(); }
+  }
+  function end(e){
+    e.stopPropagation(); clear();
+    if(st.current.held) return;
+    if(!st.current.moved) onTap();
+  }
+  return { onTouchStart:start, onTouchMove:move, onTouchEnd:end, onTouchCancel:clear,
+           onMouseDown:start,  onMouseMove:move,  onMouseUp:end,  onMouseLeave:clear };
+}
+
+/* ============================================================
+   THE ONE EDITOR FORM
+   Add passes empty defaults + a create handler; edit passes the
+   current item + an update handler. The form does not know which.
+   ============================================================ */
+function ItemEditor(props){
+  var spec = props.spec;
+  var s_v = useState(function(){
+    var v = { name:"", priority:DEFAULT_PRIORITY };
+    spec.fields.forEach(function(f){
+      if(props.initial && props.initial[f.key] !== undefined) v[f.key] = props.initial[f.key];
+    });
+    if(props.initial){
+      if(props.initial.programId !== undefined) v.programId = props.initial.programId;
+      if(props.initial.projectId !== undefined) v.projectId = props.initial.projectId;
+    }
+    if(v.priority === undefined || v.priority === null) v.priority = DEFAULT_PRIORITY;
+    return v;
+  });
+  var vals = s_v[0], setVals = s_v[1];
+  var s_b = useState(false), busy = s_b[0], setBusy = s_b[1];
+  function set(k,val){ setVals(function(p){ var n=Object.assign({},p); n[k]=val; return n; }); }
+  var nameOK = (vals.name||"").trim().length > 0;
+
+  function save(){
+    if(!nameOK) return;
+    setBusy(true);
+    var out = Object.assign({}, vals, { name:(vals.name||"").trim() });
+    Promise.resolve(props.onSave(out))
+      .then(function(){ setBusy(false); })
+      .catch(function(){ setBusy(false); });
+  }
+
+  function renderField(f){
+    if(f.type==="text"){
+      return h("div",{key:f.key},
+        fieldLabel(f.label),
+        h("input",{ value:vals[f.key]||"", placeholder:f.placeholder||"",
+          onChange:function(e){ set(f.key, e.target.value); },
+          style:{width:"100%",padding:"9px 10px",borderRadius:8,
+                 border:"1px solid "+C.line,background:"#fff",color:C.ink}}));
+    }
+    if(f.type==="temp"){
+      return h("div",{key:f.key},
+        fieldLabel(f.label),
+        swatchRow(vals[f.key], function(v){ set(f.key, v); }));
+    }
+    if(f.type==="program"){
+      return h("div",{key:f.key},
+        fieldLabel(f.label),
+        h("select",{ value: vals[f.key] || "__namesake__",
+          onChange:function(e){ set(f.key, e.target.value); },
+          style:{width:"100%",padding:"9px 10px",borderRadius:8,
+                 border:"1px solid "+C.line,background:"#fff",color:C.ink}},
+          h("option",{value:"__namesake__"}, "New namesake program (same name)"),
+          (props.programs||[]).map(function(pg){
+            return h("option",{key:pg.id,value:pg.id}, pg.name); })),
+        h("div",{style:{fontSize:11,color:C.sub,marginTop:4}},
+          "Every project has a program; a namesake is created if none is chosen."));
+    }
+    if(f.type==="project"){
+      return h("div",{key:f.key, style: f.secondary?{opacity:0.9}:{}},
+        fieldLabel(f.label + (f.secondary ? "  (re-home - rarely needed)" : "")),
+        h("select",{ value: vals[f.key] || "",
+          onChange:function(e){ set(f.key, e.target.value); },
+          style:{width:"100%",padding:"9px 10px",borderRadius:8,
+                 border:"1px solid "+C.line,background:"#fff",color:C.ink}},
+          h("option",{value:""}, "- choose project -"),
+          (props.projects||[]).map(function(pj){
+            return h("option",{key:pj.id,value:pj.id}, pj.name); })));
+    }
+    return null;
+  }
+
+  return h("div",{style:{background:C.card,border:"1px solid "+C.accent,borderRadius:12,
+                         padding:"12px 14px 14px",marginTop:10}},
+    h("div",{style:{fontSize:12,fontWeight:700,color:C.accentInk}}, props.title),
+    spec.fields.map(renderField),
+    h("div",{style:{display:"flex",gap:8,marginTop:14}},
+      h("button",{ onClick:save, disabled:busy||!nameOK,
+        style:{flex:1,padding:"11px",borderRadius:8,border:"none",cursor:"pointer",
+               background: nameOK ? C.green : "#c9c4b8", color:"#fff", fontWeight:600}},
+        busy ? "Saving..." : "Save"),
+      h("button",{ onClick:props.onCancel,
+        style:{flex:1,padding:"11px",borderRadius:8,border:"1px solid "+C.line,
+               cursor:"pointer",background:"#fff",color:C.ink}}, "Cancel")));
+}
+
+/* ============================================================
+   CHILD ROW - tap to descend, hold to edit in place (provisional)
+   ============================================================ */
+function ChildRow(props){
+  var hold = useChildHold(props.onHold, props.onOpen);
+  return h("div", Object.assign({ className:"noselect",
+    style:{display:"flex",alignItems:"center",gap:9,padding:"10px",
+           borderBottom:"1px solid "+C.line,cursor:"pointer"}}, hold),
+    tempDot(props.item.priority),
+    h("div",{style:{flex:1,minWidth:0}},
+      h("div",{style:{fontSize:14,fontWeight:500}}, props.item.name),
+      props.item.isDefault ? h("div",{style:{fontSize:11,color:C.sub}}, "default") : null),
+    h("span",{style:{color:C.sub,fontSize:16}}, "\u203A"));
+}
+
+/* ============================================================
+   THE ONE CARD CONTAINER - renders ANY kind from its kindSpec
+   ============================================================ */
+function Card(props){
+  var spec = props.spec, item = props.item;
+  var sw = prioritySwatch(item.priority);
+  var many = props.siblings.length > 1;
+
+  var gestures = useGestures({
+    onLeft:  function(){ if(many) props.onNext(); },
+    onRight: function(){ if(many) props.onPrev(); },
+    onUp:    props.onUp,
+    onHold:  function(){ props.setMode(props.mode==="edit" ? null : "edit"); }
+  });
+
+  function navBtn(glyph,label,enabled,fn){
+    return h("button",{ onClick: enabled?fn:null, disabled:!enabled,
+      "aria-label":label, title:label,
+      style:{flex:1,padding:"11px 0",fontSize:18,borderRadius:8,
+             cursor: enabled?"pointer":"default",
+             border:"1px solid "+(enabled?C.line:"transparent"),
+             background: enabled?"#fff":"transparent", color: enabled?C.ink:"#cfcabd"}}, glyph);
+  }
+
+  var parentLine = (spec.parentKind && props.parent)
+    ? h("div",{style:{fontSize:12,color:C.sub,marginTop:8}},
+        spec.parentKind + ": " + props.parent.name)
+    : null;
+
+  var canAddChild = !!props.childSpec;
+
+  return h("div",null,
+    h("div",Object.assign({className:"noselect"}, gestures),
+      h("div",{style:{display:"flex",gap:8,marginBottom:10}},
+        navBtn("\u2191","Up", true, props.onUp),
+        navBtn("\u2190","Previous", many, props.onPrev),
+        navBtn("\u2192","Next", many, props.onNext)),
+
+      h("div",{style:{background:C.card,border:"1px solid "+C.line,
+                      borderLeft:"5px solid "+sw.color,borderRadius:12,padding:"14px"}},
+        h("div",{style:{fontSize:11,color:C.sub,textTransform:"uppercase",letterSpacing:0.4}},
+          spec.label + (many ? ("  \u00B7  " + (props.index+1) + " / " + props.siblings.length) : "")),
+        h("div",{style:{display:"flex",alignItems:"center",gap:10,marginTop:4}},
+          tempDot(item.priority,14),
+          h("div",{style:{fontSize:19,fontWeight:600,fontFamily:"Georgia, serif"}}, item.name)),
+        item.isDefault ? h("div",{style:{fontSize:11,color:C.sub,marginTop:6}}, "default goal") : null,
+        parentLine,
+        h("div",{style:{display:"flex",gap:8,marginTop:14,flexWrap:"wrap"}},
+          h("button",{ onClick:function(){ props.setMode(props.mode==="edit"?null:"edit"); },
+            style:{padding:"8px 13px",borderRadius:8,border:"1px solid "+C.line,cursor:"pointer",
+                   background: props.mode==="edit"?C.accent:"#fff",
+                   color: props.mode==="edit"?"#fff":C.ink, fontSize:13}}, "Edit"),
+          canAddChild ? h("button",{ onClick:function(){ props.setMode(props.mode==="add"?null:"add"); },
+            style:{padding:"8px 13px",borderRadius:8,border:"1px solid "+C.line,cursor:"pointer",
+                   background: props.mode==="add"?C.accent:"#fff",
+                   color: props.mode==="add"?"#fff":C.ink, fontSize:13}},
+            "+ " + props.childSpec.label) : null),
+        h("div",{style:{fontSize:10,color:"#a8a49a",marginTop:10}},
+          "swipe \u2190\u2192 siblings \u00B7 swipe \u2191 parent \u00B7 hold to edit"))),
+
+    props.mode==="edit" ? h(ItemEditor,{
+      spec:spec, initial:item, title:"Edit " + spec.label,
+      programs:props.programs, projects:props.projects,
+      onCancel:function(){ props.setMode(null); },
+      onSave:function(v){ return props.onSaveEdit(v); }}) : null,
+
+    (props.mode==="add" && canAddChild) ? h(ItemEditor,{
+      spec:props.childSpec, title:"Add " + props.childSpec.label,
+      initial:(function(){
+        var init = { priority:DEFAULT_PRIORITY };
+        if(props.childSpec.parentField) init[props.childSpec.parentField] = item.id;
+        return init;
+      })(),
+      programs:props.programs, projects:props.projects,
+      onCancel:function(){ props.setMode(null); },
+      onSave:function(v){ return props.onSaveChild(v); }}) : null,
+
+    h("div",{style:{marginTop:14}},
+      h("div",{style:{fontSize:12,fontWeight:700,color:C.accentInk,marginBottom:6}},
+        (props.childSpec ? props.childSpec.plural : "tasks") +
+        (props.children.length ? ("  (" + props.children.length + ")") : "")),
+      props.childSpec
+        ? (props.children.length
+            ? h("div",{style:{border:"1px solid "+C.line,borderRadius:10,
+                              maxHeight:320,overflowY:"auto"}},
+                props.children.map(function(ch){
+                  return h(ChildRow,{ key:ch.id, item:ch,
+                    onOpen:function(){ props.onOpen(props.childSpec.kind, ch.id); },
+                    onHold:function(){ props.onEdit(props.childSpec.kind, ch.id); }});
+                }))
+            : h("div",{style:{fontSize:12,color:C.sub,fontStyle:"italic"}}, "nothing here yet"))
+        : h("div",{style:{fontSize:12,color:C.sub,fontStyle:"italic"}},
+            "nothing here yet - tasks and events are leaves, deferred")));
+}
+
+/* ============================================================
+   THE HUB (root) - capture plus a scan of ACTIVE programs/projects.
+   Two tiers only: goals and tasks fan out multiplicatively.
+   ============================================================ */
+function Hub(props){
+  var s_add = useState(null), adding = s_add[0], setAdding = s_add[1];
+
+  function addBtn(kind,label,primary){
+    var on = adding===kind;
+    return h("button",{ onClick:function(){ setAdding(on?null:kind); },
+      style:{flex:1,padding:"11px",borderRadius:9,cursor:"pointer",fontSize:14,fontWeight:600,
+             border:"1px solid "+(on?C.accent:(primary?C.green:C.line)),
+             background: on ? C.accent : (primary ? C.green : "#fff"),
+             color: (on||primary) ? "#fff" : C.ink}}, label);
+  }
+
+  function section(spec, list){
+    return h("div",{style:{marginBottom:18}},
+      h("div",{style:{fontSize:13,fontWeight:700,color:C.accentInk,marginBottom:6}}, spec.plural),
+      list.length
+        ? list.map(function(it){
+            return h("div",{ key:it.id, onClick:function(){ props.onOpen(spec.kind, it.id); },
+              style:{display:"flex",alignItems:"center",gap:9,padding:"9px 2px",
+                     borderBottom:"1px solid "+C.line,cursor:"pointer"}},
+              tempDot(it.priority),
+              h("div",{style:{flex:1,minWidth:0}},
+                h("div",{style:{fontSize:14,fontWeight:500}}, it.name),
+                (spec.kind==="project" && it.programId)
+                  ? h("div",{style:{fontSize:11,color:C.sub}},
+                      "in " + (props.nameOf("program", it.programId)||"-")) : null),
+              h("span",{style:{color:C.sub,fontSize:16}}, "\u203A"));
+          })
+        : h("div",{style:{fontSize:12,color:C.sub,fontStyle:"italic"}}, "none yet"));
+  }
+
+  return h("div",null,
+    h("div",{style:{display:"flex",gap:10,marginBottom:6}},
+      h("a",{href:"vrppg.html",
+        style:{flex:1,textAlign:"center",padding:"9px",borderRadius:8,fontSize:13,
+               border:"1px solid "+C.line,background:"#fff",color:C.sub,textDecoration:"none"}},
+        "\u2039 VRPPG"),
+      h("div",{style:{flex:1,textAlign:"center",padding:"9px",borderRadius:8,fontSize:13,
+               border:"1px dashed "+C.line,background:"transparent",color:"#b8b4aa"}},
+        "VRP \u00B7 Diag")),
+    h("div",{style:{fontSize:10,color:"#a8a49a",marginBottom:14}},
+      "VRP and Diagnostics are planned, not yet built."),
+
+    h("div",{style:{display:"flex",gap:8,marginBottom:4}},
+      addBtn("project","+ project",true), addBtn("program","+ program",false)),
+
+    adding ? h(ItemEditor,{
+      spec:KINDS[adding], title:"Add " + adding,
+      initial:{ priority:DEFAULT_PRIORITY },
+      programs:props.programs, projects:props.projects,
+      onCancel:function(){ setAdding(null); },
+      onSave:function(v){ return Promise.resolve(props.onCreate(adding, v))
+        .then(function(){ setAdding(null); }); }}) : null,
+
+    h("div",{style:{marginTop:18}},
+      section(KINDS.program, props.programs),
+      section(KINDS.project, props.projects)));
+}
+
+/* ============================================================
+   APP
+   ============================================================ */
+function App(){
+  var s_rows=useState([]), rows=s_rows[0], setRows=s_rows[1];
+  var s_cur=useState(null), cur=s_cur[0], setCur=s_cur[1];
+  var s_mode=useState(null), mode=s_mode[0], setMode=s_mode[1];
+  var s_load=useState(true), loading=s_load[0], setLoading=s_load[1];
+  var s_msg=useState(""), msg=s_msg[0], setMsg=s_msg[1];
+
+  var reload = useCallback(function(){
+    return Store.loadAll()
+      .then(function(all){ setRows(all); setLoading(false); })
+      .catch(function(e){ setMsg("Load failed: "+(e.message||e)); setLoading(false); });
+  },[]);
+  useEffect(function(){ reload(); },[reload]);
+
+  var byKind = useMemo(function(){
+    var out = {};
+    TREE_ORDER.forEach(function(k){
+      out[k] = rows.filter(function(r){ return r.kind===k; })
+                   .map(KINDS[k].read)
+                   .sort(function(a,b){ return b.priority - a.priority; });
+    });
+    return out;
+  },[rows]);
+
+  function listOf(kind){ return byKind[kind] || []; }
+  function find(kind,id){
+    var l=listOf(kind);
+    for(var i=0;i<l.length;i++){ if(l[i].id===id) return l[i]; }
+    return null;
+  }
+  function nameOf(kind,id){ var it=find(kind,id); return it?it.name:null; }
+
+  function childrenOf(node){
+    if(!node) return [];
+    var childSpec = KINDS[KINDS[node.kind].childKind];
+    if(!childSpec) return [];
+    var pf = childSpec.parentField;
+    return listOf(childSpec.kind).filter(function(c){ return c[pf] === node.id; });
+  }
+  function siblingsOf(node){
+    if(!node) return [];
+    var spec = KINDS[node.kind], self = find(node.kind, node.id);
+    if(!spec.parentKind || !self) return listOf(node.kind);
+    var pf = spec.parentField;
+    return listOf(node.kind).filter(function(x){ return x[pf] === self[pf]; });
+  }
+  function parentOf(node){
+    if(!node) return null;
+    var spec = KINDS[node.kind];
+    if(!spec.parentKind) return null;
+    var self = find(node.kind, node.id);
+    if(!self || !self[spec.parentField]) return null;
+    return { kind:spec.parentKind, id:self[spec.parentField] };
+  }
+
+  function go(kind,id){ setMode(null); setCur(kind&&id ? {kind:kind,id:id} : null); }
+
+  function resolveProgram(vals){
+    if(vals.programId && vals.programId !== "__namesake__") return Promise.resolve(vals.programId);
+    return Store.add("program", KINDS.program.write({
+      name:vals.name, priority:vals.priority, roleIds:[] })).then(function(r){ return r.id; });
+  }
+
+  function createItem(kind, vals){
+    if(kind==="program"){
+      return Store.add("program", KINDS.program.write(vals))
+        .then(function(){ setMsg("Program added."); return reload(); });
+    }
+    if(kind==="project"){
+      return resolveProgram(vals).then(function(pid){
+        return Store.add("project", KINDS.project.write(Object.assign({},vals,{programId:pid})));
+      }).then(function(projRow){
+        return Store.add("goal", KINDS.goal.write({
+          name:vals.name, priority:vals.priority, projectId:projRow.id, isDefault:true }));
+      }).then(function(){ setMsg("Project and default goal added."); return reload(); });
+    }
+    if(kind==="goal"){
+      return Store.add("goal", KINDS.goal.write(Object.assign({},vals,{isDefault:false})))
+        .then(function(){ setMsg("Goal added."); return reload(); });
+    }
+    return Promise.resolve();
+  }
+
+  /* merge over the CURRENT stored item, then write through the kind's own
+     serializer - a rename can never drop a field it does not touch. */
+  function saveEdit(kind, id, vals){
+    var base = find(kind,id) || {};
+    var merged = Object.assign({}, base, vals);
+    if(kind==="goal" && base.isDefault && vals.projectId && vals.projectId !== base.projectId){
+      merged.isDefault = false;   /* re-homing a default goal strips the flag */
+    }
+    if(kind==="project" && (!merged.programId || merged.programId==="__namesake__")){
+      return resolveProgram(merged).then(function(pid){
+        merged.programId = pid;
+        return Store.update(id, KINDS.project.write(merged));
+      }).then(function(){ setMsg("Project updated."); return reload(); });
+    }
+    return Store.update(id, KINDS[kind].write(merged))
+      .then(function(){ setMsg(kind+" updated."); return reload(); });
+  }
+
+  var body;
+  if(loading){
+    body = h("div",{style:{color:C.sub}}, "Loading...");
+  } else if(!cur){
+    body = h(Hub,{ programs:listOf("program"), projects:listOf("project"),
+      nameOf:nameOf, onOpen:go, onCreate:createItem });
+  } else {
+    var item = find(cur.kind, cur.id);
+    if(!item){
+      body = h("div",{style:{color:C.sub}}, "That item is gone.");
+    } else {
+      var spec = KINDS[cur.kind];
+      var sibs = siblingsOf(cur);
+      var idx = sibs.map(function(x){ return x.id; }).indexOf(cur.id);
+      var par = parentOf(cur);
+      var parItem = par ? find(par.kind, par.id) : null;
+      var kids = childrenOf(cur);
+      var childSpec = KINDS[spec.childKind] || null;
+
+      var ring = function(delta){
+        if(sibs.length < 2) return;
+        var n = sibs.length, i = ((idx + delta) % n + n) % n;
+        go(cur.kind, sibs[i].id);
+      };
+
+      body = h(Card,{
+        item:item, spec:spec, parent:parItem, siblings:sibs, index:idx,
+        children:kids, childSpec:childSpec,
+        programs:listOf("program"), projects:listOf("project"),
+        mode:mode, setMode:setMode,
+        onUp:function(){ if(par){ go(par.kind, par.id); } else { go(null,null); } },
+        onPrev:function(){ ring(-1); },
+        onNext:function(){ ring(1); },
+        onOpen:go,
+        onEdit:function(k,id2){ setCur({kind:k,id:id2}); setMode("edit"); },
+        onSaveEdit:function(v){ return saveEdit(cur.kind, cur.id, v).then(function(){ setMode(null); }); },
+        onSaveChild:function(v){ return createItem(childSpec.kind, v).then(function(){ setMode(null); }); }
+      });
+    }
+  }
+
+  return h("div",{style:{maxWidth:560,margin:"0 auto",padding:"14px 16px 60px"}},
+    h("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between"}},
+      h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,
+                     letterSpacing:-0.2,cursor:"pointer"},
+        onClick:function(){ go(null,null); }}, "PPG v0.3"),
+      h("span",{style:{fontSize:11,color:C.sub}}, "My Intentional Life")),
+    h("div",{style:{fontSize:12,color:C.sub,marginBottom:14}},
+      "Program \u00B7 Project \u00B7 Goal" + (cur ? "   \u00B7   tap the title for the hub" : "")),
+    body,
+    h("div",{style:{marginTop:16,fontSize:12,color:C.sub,minHeight:18}}, msg));
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+</script>
+</body>
+</html>

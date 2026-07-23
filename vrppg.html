@@ -7,425 +7,78 @@
 <title>VRPPG — My Intentional Life</title>
 <style>
   * { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; }
-  body { background:#f3f1ec; color:#1c1f26; font-family: system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; -webkit-text-size-adjust:100%; }
-  @media (prefers-reduced-motion: reduce) { * { transition:none !important; } }
-  button:focus-visible, input:focus-visible, select:focus-visible { outline:2px solid #c8741a; outline-offset:2px; }
-  ::-webkit-scrollbar { width:8px; } ::-webkit-scrollbar-thumb { background:#d8d3c8; border-radius:4px; }
-  .vr-tabs { display:flex; }
-  #status-bar { font-size:12px; padding:4px 0; min-height:20px; }
-  input, select { font-size:16px; }
+  html, body { margin:0; padding:0; }
+  body { background:#f3f1ec; color:#1c1f26;
+         font-family: system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+         -webkit-text-size-adjust:100%; -webkit-tap-highlight-color:transparent; }
+  a.surface { text-decoration:none; color:inherit; display:block; }
+  a.surface:focus-visible { outline:2px solid #c8741a; outline-offset:3px; }
+  .planned { opacity:0.6; }
+  .wrap { max-width:560px; margin:0 auto; padding:22px 16px 60px; }
+  .tile { background:#fbfaf7; border:1px solid #e2ddd2; border-radius:12px;
+          padding:16px; margin-bottom:14px; }
+  .tile h2 { margin:0; font-family:Georgia, serif; font-size:18px; font-weight:600; }
+  .tile p  { margin:6px 0 0; font-size:13px; color:#6b6f76; line-height:1.5; }
+  .row { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+  .chip { font-size:11px; color:#8a4e10; background:#f1e4d0;
+          padding:2px 9px; border-radius:20px; white-space:nowrap; }
+  .chip.live { color:#0f6b4b; background:#dcf1e8; }
+  .foot { font-size:11px; color:#9a978d; margin-top:22px; line-height:1.65; }
 </style>
 </head>
 <body>
-<div id="root"></div>
+<div class="wrap">
 
-<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+  <div class="row" style="align-items:baseline;">
+    <h1 style="margin:0;font-family:Georgia,serif;font-size:24px;font-weight:600;letter-spacing:-0.3px;">VRPPG</h1>
+    <span style="font-size:11px;color:#6b6f76;">My Intentional Life</span>
+  </div>
+  <p style="font-size:13px;color:#6b6f76;margin:4px 0 22px;">
+    Values · Roles · Programs · Projects · Goals — choose a surface.
+  </p>
 
-<script>
-"use strict";
-// ============================================================
-//  VRPPG v0.1  — Values · Roles · Programs · Projects · Goals
-//  The third project under My Intentional Life. Its own file/surface,
-//  sharing the SAME Supabase `items` table as The Daily Surface.
-//  This pass: FORM CAPTURE of role / program / project / (auto)goal.
-//  Value m×m: hooks stubbed (valueIds/roleIds arrays present, unread).
-//  Radial neighborhood view: deferred to v0.2.
-// ============================================================
-var SUPABASE_URL = "https://vjkuksmwycnklkfpngtq.supabase.co";
-var SUPABASE_KEY = "sb_publishable_2gnanut8Zvt6cyt8BBCUfw_e4ZU81YA";
-var db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+  <!-- PPG — live -->
+  <a class="surface" href="ppg.html">
+    <div class="tile" style="border-left:5px solid #1CAC78;">
+      <div class="row">
+        <h2>PPG — the card deck</h2>
+        <span class="chip live">live</span>
+      </div>
+      <p>Program · Project · Goal. Navigate and edit the containment canopy —
+         capture at the hub, cards below. The working surface.</p>
+    </div>
+  </a>
 
-var h = React.createElement;
-var useState = React.useState, useEffect = React.useEffect, useCallback = React.useCallback, useMemo = React.useMemo;
+  <!-- VRP — planned -->
+  <div class="surface planned">
+    <div class="tile" style="border-left:5px solid #8fc2ea;">
+      <div class="row">
+        <h2>VRP — the mesh</h2>
+        <span class="chip">planned</span>
+      </div>
+      <p>Value ⋈ Role ⋈ Project. The many-to-many association layer — the roots.
+         A two-list card: parents above, the item in the middle, children below.</p>
+    </div>
+  </div>
 
-// ---- palette (mirrors The Daily Surface) --------------------
-var C = {
-  bg:"#f3f1ec", card:"#fbfaf7", ink:"#1c1f26", sub:"#6b6f76",
-  line:"#e2ddd2", accent:"#c8741a", accentInk:"#8a4e10",
-  green:"#1CAC78"
-};
+  <!-- Diagnostics — planned -->
+  <div class="surface planned">
+    <div class="tile" style="border-left:5px solid #cdab7e;">
+      <div class="row">
+        <h2>Diagnostics</h2>
+        <span class="chip">planned</span>
+      </div>
+      <p>Reads across all tiers — orphaned tasks, cold projects, implied roles,
+         empty roles, the sufficiency gauge. Where the structure shows its gaps.</p>
+    </div>
+  </div>
 
-// ---- the ONE shared priority/temperature scale --------------
-// Planned from the start: the cold end (2,1,0) was always intended;
-// the warm gaps (4,6,8) are reserved-but-dormant, not anticipated.
-// highest=hottest(red 9) ... lowest=coldest(white 0 / frozen).
-var PRIORITY = [
-  { v:9, key:"red",     color:"#e02a1f", label:"Red — hot" },
-  { v:7, key:"orange",  color:"#f57b13", label:"Orange" },
-  { v:5, key:"yellow",  color:"#f4c20d", label:"Yellow" },
-  { v:3, key:"beige",   color:"#cdab7e", label:"Beige" },
-  { v:2, key:"dblue",   color:"#2f5aa8", label:"Dark blue — cold" },
-  { v:1, key:"lblue",   color:"#8fc2ea", label:"Light blue — freezing" },
-  { v:0, key:"white",   color:"#f2f4f7", label:"White — frozen" }
-];
-function prioritySwatch(p){
-  var best = PRIORITY[PRIORITY.length-1];
-  for (var i=0;i<PRIORITY.length;i++){ if(p>=PRIORITY[i].v){ best=PRIORITY[i]; break; } }
-  return best;
-}
-function priorityTone(p){ return prioritySwatch(p).color; }
-function swatchRow(selectedV, onPick, size){
-  size = size || 22;
-  return h("span",{style:{display:"inline-flex",gap:6,flexWrap:"wrap"}},
-    PRIORITY.map(function(p){
-      var on = p.v===selectedV;
-      // white swatch needs a visible border even when unselected (it's near-bg)
-      var faint = (p.key==="white");
-      return h("button",{key:p.key,onClick:function(e){ e.stopPropagation(); onPick(p.v); },title:p.label,"aria-label":"priority "+p.label,
-        style:{width:size,height:size,borderRadius:4,cursor:"pointer",background:p.color,
-          border:on?"2px solid "+C.ink:(faint?"2px solid "+C.line:"2px solid transparent"),
-          boxShadow:on?"0 0 0 1px #fff inset":"none",
-          transform:on?"scale(1.08)":"none",transition:"transform .08s"}});
-    })
-  );
-}
+  <p class="foot">
+    VRPPG is the third project under My Intentional Life, sibling to The Daily
+    Surface and The Prompt Server. All three surfaces share one Supabase spine.
+    PPG is live; VRP and Diagnostics arrive later.
+  </p>
 
-// ---- data layer (schema-light, same table/shape as Daily Surface) ----
-var Store = {
-  loadAll: function(){
-    return db.from("items").select("*").then(function(r){ if(r.error) throw r.error; return r.data||[]; });
-  },
-  add: function(kind, dataObj){
-    return db.from("items").insert([{ kind:kind, data:dataObj }]).select().then(function(r){
-      if(r.error) throw r.error; return r.data[0]; });
-  },
-  update: function(id, dataObj){
-    return db.from("items").update({ data:dataObj }).eq("id",id).select().then(function(r){
-      if(r.error) throw r.error; return r.data[0]; });
-  },
-  remove: function(id){
-    return db.from("items").delete().eq("id",id).then(function(r){ if(r.error) throw r.error; return true; });
-  }
-};
-
-// ---- tolerant readers for the four new kinds ----------------
-// Each returns a flat object with id + fields; unknown/missing fields default safely.
-function readRole(row){ var d=row.data||{}; return {
-  id:row.id, kind:"role", name:d.name||"(untitled role)",
-  priority: typeof d.priority==="number"?d.priority:3,
-  valueIds: Array.isArray(d.valueIds)?d.valueIds:[]        // m×m hook (stubbed)
-}; }
-function readProgram(row){ var d=row.data||{}; return {
-  id:row.id, kind:"program", name:d.name||"(untitled program)",
-  priority: typeof d.priority==="number"?d.priority:3,
-  roleIds: Array.isArray(d.roleIds)?d.roleIds:[]           // independent of child projects (by design)
-}; }
-function readProject(row){ var d=row.data||{}; return {
-  id:row.id, kind:"project", name:d.name||"(untitled project)",
-  priority: typeof d.priority==="number"?d.priority:2,     // projects default COLD (dark blue)
-  roleIds: Array.isArray(d.roleIds)?d.roleIds:[],
-  programId: d.programId||null
-}; }
-function readGoal(row){ var d=row.data||{}; return {
-  id:row.id, kind:"goal", name:d.name||"(untitled goal)",
-  priority: typeof d.priority==="number"?d.priority:2,
-  projectId: d.projectId||null,
-  isDefault: !!d.isDefault                                  // the auto self-named goal
-}; }
-
-// serializers (only write the fields that kind owns)
-function roleToData(r){ return { name:r.name, priority:r.priority, valueIds:r.valueIds||[] }; }
-function programToData(p){ return { name:p.name, priority:p.priority, roleIds:p.roleIds||[] }; }
-function projectToData(p){ return { name:p.name, priority:p.priority, roleIds:p.roleIds||[], programId:p.programId||null }; }
-function goalToData(g){ return { name:g.name, priority:g.priority, projectId:g.projectId||null, isDefault:!!g.isDefault }; }
-
-// ============================================================
-//  small shared UI bits
-// ============================================================
-function fieldLabel(txt){ return h("div",{style:{fontSize:12,color:C.sub,marginBottom:4,marginTop:10}}, txt); }
-function textInput(val, onChange, placeholder){
-  return h("input",{value:val,placeholder:placeholder||"",onChange:function(e){ onChange(e.target.value); },
-    style:{width:"100%",padding:"9px 10px",borderRadius:8,border:"1px solid "+C.line,background:"#fff",color:C.ink}});
-}
-function pill(txt, tone){
-  return h("span",{style:{display:"inline-block",fontSize:11,padding:"2px 8px",borderRadius:20,
-    background:tone||C.line,color:"#26303a",marginRight:6,marginBottom:4}}, txt);
-}
-function chipToggle(txt, on, onClick){
-  return h("button",{onClick:onClick,style:{fontSize:12,padding:"5px 10px",borderRadius:20,cursor:"pointer",
-    marginRight:6,marginBottom:6,
-    border:"1px solid "+(on?C.green:C.line),
-    background:on?C.green:"#fff", color:on?"#fff":C.ink}}, txt);
-}
-
-// multi-select of existing items (roles on a program/project) via chips
-function multiChip(all, selectedIds, onToggle, emptyMsg){
-  if(!all.length) return h("div",{style:{fontSize:12,color:C.sub,fontStyle:"italic"}}, emptyMsg||"none yet");
-  return h("div",{style:{display:"flex",flexWrap:"wrap"}},
-    all.map(function(it){
-      var on = selectedIds.indexOf(it.id)>=0;
-      return h("span",{key:it.id}, chipToggle(it.name, on, function(){ onToggle(it.id); }));
-    })
-  );
-}
-
-// ============================================================
-//  Capture forms — one per kind
-// ============================================================
-function RoleForm(props){
-  var s_n=useState(""), name=s_n[0], setName=s_n[1];
-  var s_p=useState(3), pri=s_p[0], setPri=s_p[1];
-  var s_busy=useState(false), busy=s_busy[0], setBusy=s_busy[1];
-  function submit(){
-    var nm=name.trim(); if(!nm) return;
-    setBusy(true);
-    props.onCreate({ name:nm, priority:pri, valueIds:[] }).then(function(){ setName(""); setPri(3); setBusy(false); })
-      .catch(function(){ setBusy(false); });
-  }
-  return h("div",null,
-    fieldLabel("Role name"),
-    textInput(name,setName,"e.g. Partner, Provider, Self-development"),
-    fieldLabel("Priority / temperature"),
-    swatchRow(pri, setPri, 26),
-    h("div",{style:{fontSize:11,color:C.sub,marginTop:4}}, "Values attach later — the m×m hook is reserved, not surfaced yet."),
-    h("button",{onClick:submit,disabled:busy||!name.trim(),
-      style:{marginTop:14,width:"100%",padding:"11px",borderRadius:9,border:"none",cursor:"pointer",
-        background:name.trim()?C.green:"#c9c4b8",color:"#fff",fontSize:15,fontWeight:600}},
-      busy?"Saving…":"Add role")
-  );
-}
-
-function ProgramForm(props){
-  var s_n=useState(""), name=s_n[0], setName=s_n[1];
-  var s_p=useState(3), pri=s_p[0], setPri=s_p[1];
-  var s_r=useState([]), roleIds=s_r[0], setRoleIds=s_r[1];
-  var s_busy=useState(false), busy=s_busy[0], setBusy=s_busy[1];
-  function toggleRole(id){ setRoleIds(function(prev){ return prev.indexOf(id)>=0?prev.filter(function(x){return x!==id;}):prev.concat([id]); }); }
-  function submit(){
-    var nm=name.trim(); if(!nm) return;
-    setBusy(true);
-    props.onCreate({ name:nm, priority:pri, roleIds:roleIds }).then(function(){ setName(""); setPri(3); setRoleIds([]); setBusy(false); })
-      .catch(function(){ setBusy(false); });
-  }
-  return h("div",null,
-    fieldLabel("Program name"),
-    textInput(name,setName,"a meta-project (umbrella over projects)"),
-    fieldLabel("Priority / temperature"),
-    swatchRow(pri, setPri, 26),
-    fieldLabel("Roles this program serves (independent of its projects)"),
-    multiChip(props.roles, roleIds, toggleRole, "add roles first"),
-    h("button",{onClick:submit,disabled:busy||!name.trim(),
-      style:{marginTop:14,width:"100%",padding:"11px",borderRadius:9,border:"none",cursor:"pointer",
-        background:name.trim()?C.green:"#c9c4b8",color:"#fff",fontSize:15,fontWeight:600}},
-      busy?"Saving…":"Add program")
-  );
-}
-
-function ProjectForm(props){
-  // project → default namesake program, OR pick existing, OR none.
-  // every project auto-creates one self-named default goal.
-  var s_n=useState(""), name=s_n[0], setName=s_n[1];
-  var s_p=useState(2), pri=s_p[0], setPri=s_p[1];               // projects default cold
-  var s_r=useState([]), roleIds=s_r[0], setRoleIds=s_r[1];
-  var s_pm=useState("__namesake__"), progChoice=s_pm[0], setProgChoice=s_pm[1];
-  var s_busy=useState(false), busy=s_busy[0], setBusy=s_busy[1];
-  function toggleRole(id){ setRoleIds(function(prev){ return prev.indexOf(id)>=0?prev.filter(function(x){return x!==id;}):prev.concat([id]); }); }
-  function submit(){
-    var nm=name.trim(); if(!nm) return;
-    setBusy(true);
-    props.onCreate({ name:nm, priority:pri, roleIds:roleIds, progChoice:progChoice })
-      .then(function(){ setName(""); setPri(2); setRoleIds([]); setProgChoice("__namesake__"); setBusy(false); })
-      .catch(function(){ setBusy(false); });
-  }
-  return h("div",null,
-    fieldLabel("Project name"),
-    textInput(name,setName,"a project — cold until it has tasks"),
-    fieldLabel("Priority / temperature"),
-    swatchRow(pri, setPri, 26),
-    h("div",{style:{fontSize:11,color:C.sub,marginTop:4}}, "Defaults to dark-blue (cold). It warms as tasks attach."),
-    fieldLabel("Program"),
-    h("select",{value:progChoice,onChange:function(e){ setProgChoice(e.target.value); },
-      style:{width:"100%",padding:"9px 10px",borderRadius:8,border:"1px solid "+C.line,background:"#fff",color:C.ink}},
-      h("option",{value:"__namesake__"}, "New namesake program (same name)"),
-      h("option",{value:"__none__"}, "No program"),
-      props.programs.map(function(pg){ return h("option",{key:pg.id,value:pg.id}, pg.name); })
-    ),
-    fieldLabel("Roles this project serves"),
-    multiChip(props.roles, roleIds, toggleRole, "add roles first"),
-    h("div",{style:{fontSize:11,color:C.sub,marginTop:8}}, "A self-named default goal is created automatically, so the project is immediately task-pointable."),
-    h("button",{onClick:submit,disabled:busy||!name.trim(),
-      style:{marginTop:14,width:"100%",padding:"11px",borderRadius:9,border:"none",cursor:"pointer",
-        background:name.trim()?C.green:"#c9c4b8",color:"#fff",fontSize:15,fontWeight:600}},
-      busy?"Saving…":"Add project")
-  );
-}
-
-function GoalForm(props){
-  // extra goals beyond the auto default; must attach to a project.
-  var s_n=useState(""), name=s_n[0], setName=s_n[1];
-  var s_p=useState(2), pri=s_p[0], setPri=s_p[1];
-  var s_pj=useState(""), projId=s_pj[0], setProjId=s_pj[1];
-  var s_busy=useState(false), busy=s_busy[0], setBusy=s_busy[1];
-  function submit(){
-    var nm=name.trim(); if(!nm||!projId) return;
-    setBusy(true);
-    props.onCreate({ name:nm, priority:pri, projectId:projId, isDefault:false })
-      .then(function(){ setName(""); setPri(2); setBusy(false); }).catch(function(){ setBusy(false); });
-  }
-  if(!props.projects.length){
-    return h("div",{style:{fontSize:13,color:C.sub,fontStyle:"italic"}}, "Create a project first — goals live under a project.");
-  }
-  return h("div",null,
-    fieldLabel("Goal name"),
-    textInput(name,setName,"a concrete goal under a project"),
-    fieldLabel("Under project"),
-    h("select",{value:projId,onChange:function(e){ setProjId(e.target.value); },
-      style:{width:"100%",padding:"9px 10px",borderRadius:8,border:"1px solid "+C.line,background:"#fff",color:C.ink}},
-      h("option",{value:""}, "— choose project —"),
-      props.projects.map(function(pj){ return h("option",{key:pj.id,value:pj.id}, pj.name); })
-    ),
-    fieldLabel("Priority / temperature"),
-    swatchRow(pri, setPri, 26),
-    h("button",{onClick:submit,disabled:busy||!name.trim()||!projId,
-      style:{marginTop:14,width:"100%",padding:"11px",borderRadius:9,border:"none",cursor:"pointer",
-        background:(name.trim()&&projId)?C.green:"#c9c4b8",color:"#fff",fontSize:15,fontWeight:600}},
-      busy?"Saving…":"Add goal")
-  );
-}
-
-// ============================================================
-//  Browse list — grouped by kind, sorted hottest→coldest
-// ============================================================
-function tempDot(pri){
-  return h("span",{title:prioritySwatch(pri).label,style:{width:12,height:12,borderRadius:12,
-    background:priorityTone(pri),border:"1px solid "+C.line,display:"inline-block",flex:"0 0 auto"}});
-}
-function itemRow(it, sub){
-  return h("div",{key:it.id,style:{display:"flex",alignItems:"center",gap:9,padding:"7px 2px",borderBottom:"1px solid "+C.line}},
-    tempDot(it.priority),
-    h("div",{style:{flex:1,minWidth:0}},
-      h("div",{style:{fontSize:14,color:C.ink,fontWeight:500}}, it.name),
-      sub?h("div",{style:{fontSize:11,color:C.sub}}, sub):null
-    )
-  );
-}
-
-// ============================================================
-//  App
-// ============================================================
-function App(){
-  var s_rows=useState([]), rows=s_rows[0], setRows=s_rows[1];
-  var s_tab=useState("add"), tab=s_tab[0], setTab=s_tab[1];      // add | browse
-  var s_kind=useState("role"), kind=s_kind[0], setKind=s_kind[1]; // which capture form
-  var s_status=useState(""), status=s_status[0], setStatus=s_status[1];
-  var s_loading=useState(true), loading=s_loading[0], setLoading=s_loading[1];
-
-  var reload = useCallback(function(){
-    return Store.loadAll().then(function(all){ setRows(all); setLoading(false); })
-      .catch(function(e){ setStatus("Load failed: "+(e.message||e)); setLoading(false); });
-  },[]);
-  useEffect(function(){ reload(); },[reload]);
-
-  var roles    = useMemo(function(){ return rows.filter(function(r){return r.kind==="role";}).map(readRole)
-                    .sort(function(a,b){ return b.priority-a.priority; }); },[rows]);
-  var programs = useMemo(function(){ return rows.filter(function(r){return r.kind==="program";}).map(readProgram)
-                    .sort(function(a,b){ return b.priority-a.priority; }); },[rows]);
-  var projects = useMemo(function(){ return rows.filter(function(r){return r.kind==="project";}).map(readProject)
-                    .sort(function(a,b){ return b.priority-a.priority; }); },[rows]);
-  var goals    = useMemo(function(){ return rows.filter(function(r){return r.kind==="goal";}).map(readGoal)
-                    .sort(function(a,b){ return b.priority-a.priority; }); },[rows]);
-
-  var progName = useCallback(function(id){ for(var i=0;i<programs.length;i++){ if(programs[i].id===id) return programs[i].name; } return null; },[programs]);
-  var projName = useCallback(function(id){ for(var i=0;i<projects.length;i++){ if(projects[i].id===id) return projects[i].name; } return null; },[projects]);
-
-  // ---- create handlers ----
-  function createRole(fields){
-    return Store.add("role", roleToData(fields)).then(function(){ setStatus("Role added."); return reload(); });
-  }
-  function createProgram(fields){
-    return Store.add("program", programToData(fields)).then(function(){ setStatus("Program added."); return reload(); });
-  }
-  // project create: resolve program choice (namesake→create, id→attach, none→null),
-  // then create the project, then auto-create its self-named default goal.
-  function createProject(fields){
-    var progChoice = fields.progChoice;
-    var chain;
-    if(progChoice==="__namesake__"){
-      chain = Store.add("program", programToData({ name:fields.name, priority:fields.priority, roleIds:[] }))
-        .then(function(row){ return row.id; });
-    } else if(progChoice==="__none__"){
-      chain = Promise.resolve(null);
-    } else {
-      chain = Promise.resolve(progChoice);
-    }
-    return chain.then(function(programId){
-      return Store.add("project", projectToData({ name:fields.name, priority:fields.priority, roleIds:fields.roleIds, programId:programId }));
-    }).then(function(projRow){
-      // auto default goal, self-named, same temperature as the project
-      return Store.add("goal", goalToData({ name:fields.name, priority:fields.priority, projectId:projRow.id, isDefault:true }));
-    }).then(function(){ setStatus("Project + default goal added."); return reload(); });
-  }
-  function createGoal(fields){
-    return Store.add("goal", goalToData(fields)).then(function(){ setStatus("Goal added."); return reload(); });
-  }
-
-  // ---- render ----
-  var tabBtn = function(id,label){
-    return h("button",{onClick:function(){ setTab(id); },
-      style:{flex:1,padding:"10px",border:"none",cursor:"pointer",fontSize:14,fontWeight:600,
-        borderBottom:tab===id?"2px solid "+C.accent:"2px solid transparent",
-        background:"transparent",color:tab===id?C.accentInk:C.sub}}, label);
-  };
-  var kindBtn = function(id,label){
-    return h("button",{onClick:function(){ setKind(id); },
-      style:{padding:"6px 12px",borderRadius:20,cursor:"pointer",marginRight:6,marginBottom:8,fontSize:13,
-        border:"1px solid "+(kind===id?C.accent:C.line),
-        background:kind===id?C.accent:"#fff",color:kind===id?"#fff":C.ink}}, label);
-  };
-
-  var captureBody;
-  if(kind==="role")        captureBody = h(RoleForm,{ onCreate:createRole });
-  else if(kind==="program")captureBody = h(ProgramForm,{ onCreate:createProgram, roles:roles });
-  else if(kind==="project")captureBody = h(ProjectForm,{ onCreate:createProject, roles:roles, programs:programs });
-  else                     captureBody = h(GoalForm,{ onCreate:createGoal, projects:projects });
-
-  var browseBody = h("div",null,
-    h("div",{style:{marginBottom:16}},
-      h("div",{style:{fontSize:13,fontWeight:700,color:C.accentInk,marginBottom:4}}, "Roles"),
-      roles.length? roles.map(function(r){ return itemRow(r, r.valueIds.length?(r.valueIds.length+" values"):null); })
-        : h("div",{style:{fontSize:12,color:C.sub,fontStyle:"italic"}}, "none yet")),
-    h("div",{style:{marginBottom:16}},
-      h("div",{style:{fontSize:13,fontWeight:700,color:C.accentInk,marginBottom:4}}, "Programs"),
-      programs.length? programs.map(function(p){ return itemRow(p, p.roleIds.length?(p.roleIds.length+" roles"):null); })
-        : h("div",{style:{fontSize:12,color:C.sub,fontStyle:"italic"}}, "none yet")),
-    h("div",{style:{marginBottom:16}},
-      h("div",{style:{fontSize:13,fontWeight:700,color:C.accentInk,marginBottom:4}}, "Projects"),
-      projects.length? projects.map(function(p){
-          var bits=[]; if(p.programId){ var pn=progName(p.programId); if(pn) bits.push("in "+pn); }
-          if(p.roleIds.length) bits.push(p.roleIds.length+" roles");
-          return itemRow(p, bits.join(" · ")||null); })
-        : h("div",{style:{fontSize:12,color:C.sub,fontStyle:"italic"}}, "none yet")),
-    h("div",{style:{marginBottom:16}},
-      h("div",{style:{fontSize:13,fontWeight:700,color:C.accentInk,marginBottom:4}}, "Goals"),
-      goals.length? goals.map(function(g){
-          var pn = g.projectId?projName(g.projectId):null;
-          var sub = (pn?("under "+pn):"") + (g.isDefault?" · default":"");
-          return itemRow(g, sub.trim()||null); })
-        : h("div",{style:{fontSize:12,color:C.sub,fontStyle:"italic"}}, "none yet"))
-  );
-
-  return h("div",{style:{maxWidth:560,margin:"0 auto",padding:"14px 16px 60px"}},
-    h("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",marginBottom:2}},
-      h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "VRPPG v0.1"),
-      h("span",{style:{fontSize:11,color:C.sub}}, "My Intentional Life")),
-    h("div",{style:{fontSize:12,color:C.sub,marginBottom:12}}, "Roles · Programs · Projects · Goals"),
-
-    h("div",{className:"vr-tabs",style:{borderBottom:"1px solid "+C.line,marginBottom:14}},
-      tabBtn("add","Capture"), tabBtn("browse","Browse")),
-
-    tab==="add"? h("div",null,
-      h("div",{style:{marginBottom:10}}, kindBtn("role","Role"), kindBtn("program","Program"), kindBtn("project","Project"), kindBtn("goal","Goal")),
-      h("div",{style:{background:C.card,border:"1px solid "+C.line,borderRadius:12,padding:"14px 14px 16px"}}, captureBody)
-    ) : (loading? h("div",{style:{color:C.sub}}, "Loading…") : browseBody),
-
-    h("div",{id:"status-bar",style:{marginTop:14,color:C.sub}}, status)
-  );
-}
-
-ReactDOM.createRoot(document.getElementById("root")).render(h(App));
-</script>
+</div>
 </body>
 </html>
