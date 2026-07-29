@@ -554,10 +554,24 @@ function TaskForm(props){
   // second Capture would duplicate it).
   function resetFields(){
     setTitle(""); setEffort(2); setPriority(5);
-    setShowOn(""); setFireAt(""); setWarn(0); setOpen(false);
+    // showOn resets to the CAPTURE DEFAULT, not blank: on a non-today date that default is the
+    // viewed date (init.showOn), so the 2nd, 3rd… task captured on a future day stays on that day
+    // instead of silently going undated. On today init.showOn is "", so this blanks as before.
+    setShowOn(init.showOn || ""); setFireAt(""); setWarn(0); setOpen(false);
     setRep(false); setREvery(1); setREveryStr("1"); setRUnit("week"); setRDays([]);
     setREndMode("count"); setRCount(10); setRCountStr("10"); setREndDate("");
   }
+
+  // Capture-only: when the viewed date changes (init.showOn changes), re-seed showOn to the new
+  // default so the capture form tracks the day in view. Navigating to another day is itself the
+  // act of retargeting capture to that day — it overrides a manually-typed date, which is the
+  // expected behavior when you move to a new day. Edit mode is never re-seeded (guarded), so an
+  // open edit modal keeps the task's own date.
+  useEffect(function(){
+    if (props.mode==="edit") return;
+    setShowOn(init.showOn || "");
+    if (!init.showOn){ setFireAt(""); setWarn(0); }   // no default date → clear dependent prompt fields
+  }, [init.showOn]);
 
   function submit(){
     if (saving) return;                       // in-flight: ignore repeat taps
@@ -1499,7 +1513,11 @@ function App() {
 
     children.push(
       h("div",{key:"capture",style:{marginTop:18,paddingTop:16,borderTop:"1px solid "+C.line}},
-        h(TaskForm,{ mode:"capture", initial:{}, onSubmit:submitNewTask })
+        // Capture default: on a NON-TODAY date, a new task defaults its showOn to the viewed date
+        // — navigating to a future day is itself the act of specifying that day. On TODAY it stays
+        // undated (the floating pool), unless the prompt drawer sets a date. The drawer's picker
+        // still overrides in either case. (Asymmetry is deliberate; mirrors the event onDate wiring.)
+        h(TaskForm,{ mode:"capture", initial: isToday ? {} : { showOn: viewDate }, onSubmit:submitNewTask })
       )
     );
 
@@ -1849,7 +1867,7 @@ function App() {
     eventFormNode(),
     h("header",{style:{maxWidth:640,margin:"0",padding:"max(28px, env(safe-area-inset-top)) 24px 10px"}},
       h("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:8}},
-        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.8.2"),
+        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.8.3"),
         h("div",{style:{fontSize:12.5,color:C.sub,fontStyle:"italic"}}, "The important that is placed and the urgent that is done")
       ),
       h("div",{id:"status-bar",style:{color:(status.indexOf("Could not")===0||status.indexOf("failed")>-1)?"#a23":C.faint}}, status),
