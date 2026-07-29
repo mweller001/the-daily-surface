@@ -1397,7 +1397,16 @@ function App() {
         var colLeftCss = "calc(50px + "+cf.L+" * (100% - 56px)"+(split&&cf.L>0?" + 2px":"")+")";
         var colWidthCss = "calc("+(cf.R-cf.L)+" * (100% - 56px)"+(split?" - "+((cf.L>0?2:0)+(cf.R<1?2:0))+"px":"")+")";
         segs.forEach(function(sg,si){
-          var segTop = Math.max(0,yOf(sg.a)), segH = Math.max(13,(sg.b-sg.a)*PX_PER_MIN-1);
+          // Clip the segment to the visible region at/below the origin (the now bar). As the now
+          // bar advances INTO a prep/travel segment before its event starts, the segment must
+          // shrink from the TOP and scroll up past the line — not cling to it. The old
+          // Math.max(0,yOf(sg.a)) pinned the top to the bar and kept full height, so prep/travel
+          // stuck to the now bar instead of scrolling above it. Render only [max(sg.a,originMin), sg.b];
+          // skip a segment that has scrolled entirely into the past. (The event solid segment is
+          // unaffected — by the time the bar reaches it, the event is in-progress and origin backs up.)
+          var aVis = Math.max(sg.a, originMin);
+          if (aVis >= sg.b) return;                                  // fully elapsed — nothing to show
+          var segTop = yOf(aVis), segH = Math.max(13,(sg.b-aVis)*PX_PER_MIN-1);
           canvasKids.push(
             h("div",Object.assign({key:(it.id||"a"+i)+"-"+si,
               style:{position:"absolute",left:colLeftCss,width:colWidthCss,top:segTop,height:segH,cursor:"pointer",
@@ -1874,7 +1883,7 @@ function App() {
     eventFormNode(),
     h("header",{style:{maxWidth:640,margin:"0",padding:"max(28px, env(safe-area-inset-top)) 24px 10px"}},
       h("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:8}},
-        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.8.4"),
+        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.8.5"),
         h("div",{style:{fontSize:12.5,color:C.sub,fontStyle:"italic"}}, "The important that is placed and the urgent that is done")
       ),
       h("div",{id:"status-bar",style:{color:(status.indexOf("Could not")===0||status.indexOf("failed")>-1)?"#a23":C.faint}}, status),
