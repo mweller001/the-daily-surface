@@ -1405,10 +1405,21 @@ function App() {
               onPointerUp:function(e){e.stopPropagation();},
               "aria-label":"mark done",
               style:{marginTop:2,width:14,height:14,flexShrink:0,border:"1.5px solid rgba(255,255,255,0.8)",borderRadius:3,background:"transparent",cursor:"pointer"}}),
-            h("div",{style:{flex:1,minWidth:0,overflow:"hidden"}},
-              h("div",{style:{fontSize:13,fontWeight:600,lineHeight:1.2,textShadow:"0 1px 1px rgba(0,0,0,0.25)",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}, it.title),
-              bh>30 ? h("div",{style:{fontSize:10.5,opacity:0.92,fontVariantNumeric:"tabular-nums",marginTop:1}}, it.schStart+"–"+it.schEnd+" · "+minToLabel(it.dur)) : null
-            )
+            (function(){
+              // Multiline title, clamped to the lines the block height actually allows.
+              // Title line ≈ 13px × 1.2 = 15.6px. The time row (shown when bh>30) costs one
+              // ~13px line plus its 1px margin; reserve it so the title never overlaps the time.
+              // Floor of 1 line so a short block still shows a (truncated) title.
+              var TITLE_LH = 15.6, TIME_ROW = 14, PAD_V = 4;
+              var avail = bh - PAD_V - (bh>30 ? TIME_ROW : 0);
+              var lines = Math.max(1, Math.floor(avail / TITLE_LH));
+              return h("div",{style:{flex:1,minWidth:0,overflow:"hidden"}},
+                h("div",{style:{fontSize:13,fontWeight:600,lineHeight:1.2,textShadow:"0 1px 1px rgba(0,0,0,0.25)",
+                  overflow:"hidden",textOverflow:"ellipsis",display:"-webkit-box",WebkitLineClamp:lines,WebkitBoxOrient:"vertical",
+                  whiteSpace:"pre-wrap",wordBreak:"break-word"}}, it.title),
+                bh>30 ? h("div",{style:{fontSize:10.5,opacity:0.92,fontVariantNumeric:"tabular-nums",marginTop:1}}, it.schStart+"–"+it.schEnd+" · "+minToLabel(it.dur)) : null
+              );
+            })()
           )
         );
       }
@@ -1838,7 +1849,7 @@ function App() {
     eventFormNode(),
     h("header",{style:{maxWidth:640,margin:"0",padding:"max(28px, env(safe-area-inset-top)) 24px 10px"}},
       h("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:8}},
-        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.8.1"),
+        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.8.2"),
         h("div",{style:{fontSize:12.5,color:C.sub,fontStyle:"italic"}}, "The important that is placed and the urgent that is done")
       ),
       h("div",{id:"status-bar",style:{color:(status.indexOf("Could not")===0||status.indexOf("failed")>-1)?"#a23":C.faint}}, status),
