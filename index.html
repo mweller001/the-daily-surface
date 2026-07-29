@@ -818,13 +818,14 @@ function App() {
   // from each event's extendedProperties (0 when absent).
   var connectCalendar = useCallback(function(){
     setCalState("connecting"); setCalMsg("");
+    var day = viewDateRef.current;   // live viewed date (this callback's closure is frozen at first render)
     GCal.connect().then(function(){
-      return GCal.fetchEventsForDate(viewDate);
+      return GCal.fetchEventsForDate(day);
     }).then(function(res){
       setAppts(res.timed);
       setAllDayFlags(res.allDay);
       setCalState("connected");
-      setCalMsg(res.timed.length + " event" + (res.timed.length===1?"":"s") + " today");
+      setCalMsg(res.timed.length + " event" + (res.timed.length===1?"":"s") + (day===todayStr()?" today":" that day"));
     }).catch(function(e){
       setCalState("error");
       setCalMsg(e.message||String(e));
@@ -879,7 +880,7 @@ function App() {
       p = GCal.createEvent({ title:f.title, start:f.start, end:f.end, prep:parseInt(f.prep,10), travel:parseInt(f.travel,10), onDate:f.onDate });
     }
     p.then(function(){
-      return GCal.fetchEventsForDate(viewDate);
+      return GCal.fetchEventsForDate(viewDateRef.current);   // live viewed date, not the stale closure
     }).then(function(res){
       setAppts(res.timed); setAllDayFlags(res.allDay);
       setEvForm(null);
@@ -890,6 +891,12 @@ function App() {
   // ref mirror so saveEventForm reads the latest field values
   var evFormRef = React.useRef(null);
   evFormRef.current = evForm;
+  // ref mirror of the viewed date. saveEventForm and connectCalendar are useCallback([]) — their
+  // closed-over viewDate is frozen at first render (= today). Reading viewDateRef.current gets the
+  // LIVE date, so a save/connect while viewing a future day re-fetches THAT day, not today. Without
+  // this the saved event doesn't appear until a day round-trip forces refreshCalendar to re-pull.
+  var viewDateRef = React.useRef(viewDate);
+  viewDateRef.current = viewDate;
 
   // PROMPT FIRING ENGINE (client-only, Rung 1). Runs each tick (via nowMin dep).
   // For each task with a prompt firing today, derive Begin (fireAt) and Transition
@@ -1867,7 +1874,7 @@ function App() {
     eventFormNode(),
     h("header",{style:{maxWidth:640,margin:"0",padding:"max(28px, env(safe-area-inset-top)) 24px 10px"}},
       h("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:8}},
-        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.8.3"),
+        h("h1",{style:{margin:0,fontFamily:"Georgia, serif",fontSize:22,fontWeight:600,letterSpacing:-0.2}}, "My Intentional Life v0.8.4"),
         h("div",{style:{fontSize:12.5,color:C.sub,fontStyle:"italic"}}, "The important that is placed and the urgent that is done")
       ),
       h("div",{id:"status-bar",style:{color:(status.indexOf("Could not")===0||status.indexOf("failed")>-1)?"#a23":C.faint}}, status),
